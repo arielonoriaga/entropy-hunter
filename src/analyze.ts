@@ -50,13 +50,14 @@ interface CachedBase {
   fp: FileFingerprint;
 }
 
+// All parameters are explicit and required — callers resolve defaults
+// (CLI flag > config) before calling. storage: null = run stateless.
 export function analyzeRepo(
   repo: string,
   config: EntropyConfig,
-  opts: { since?: string; storage?: Storage } = {},
+  since: string,
+  storage: Storage | null,
 ): AnalysisResult {
-  const since = opts.since ?? config.analysis.since;
-  const storage = opts.storage;
   const paths = listAnalyzableFiles(repo);
   const fileSet = new Set(paths);
   const filesetHash = String(Bun.hash(paths.join("\n")));

@@ -67,8 +67,8 @@ function parseArgs(argv: string[]): Args {
 function analyzeWithTrend(args: Args): AnalysisResult {
   const config = loadConfig(args.repo);
   // Initialized repos get the incremental cache; otherwise run stateless.
-  const storage = existsSync(dbPath(args.repo)) ? new Storage(dbPath(args.repo)) : undefined;
-  const result = analyzeRepo(args.repo, config, { since: args.since, storage });
+  const storage = existsSync(dbPath(args.repo)) ? new Storage(dbPath(args.repo)) : null;
+  const result = analyzeRepo(args.repo, config, args.since ?? config.analysis.since, storage);
   const prev = storage?.latest();
   if (prev) {
     const delta = Math.round((result.summary.entropy - prev.entropy) * 10) / 10;

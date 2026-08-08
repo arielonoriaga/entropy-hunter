@@ -16,7 +16,7 @@ describe("snapshot persistence", () => {
   test("save, dedupe by commit, read back history with deltas", () => {
     const db = join(dir, "entropy.db");
     const storage = new Storage(db);
-    const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG);
+    const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null);
 
     result.repository.commit = "aaa1111";
     result.timestamp = "2026-07-01T00:00:00.000Z";
@@ -66,9 +66,9 @@ describe("snapshot persistence", () => {
 describe("incremental cache", () => {
   test("warm cached run equals cold uncached run", () => {
     const storage = new Storage(join(dir, "cache.db"));
-    const uncached = analyzeRepo(FIXTURES, DEFAULT_CONFIG);
-    const cold = analyzeRepo(FIXTURES, DEFAULT_CONFIG, { storage }); // populates cache
-    const warm = analyzeRepo(FIXTURES, DEFAULT_CONFIG, { storage }); // reads cache
+    const uncached = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null);
+    const cold = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage); // populates cache
+    const warm = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage); // reads cache
     const strip = (r: ReturnType<typeof analyzeRepo>) => ({ ...r, timestamp: null });
     expect(strip(cold)).toEqual(strip(uncached));
     expect(strip(warm)).toEqual(strip(uncached));
@@ -84,7 +84,7 @@ describe("incremental cache", () => {
     const target = join(repo, "typescript", "simple", "util.ts");
 
     const storage = new Storage(join(dir, "cache-invalidate.db"));
-    const before = analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    const before = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage);
     const beforeRow = storage.getFileCache("typescript/simple/util.ts")!;
 
     writeFileSync(
@@ -95,9 +95,9 @@ describe("incremental cache", () => {
       { flag: "a" },
     );
 
-    const after = analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    const after = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage);
     const afterRow = storage.getFileCache("typescript/simple/util.ts")!;
-    const directUncached = analyzeRepo(repo, DEFAULT_CONFIG);
+    const directUncached = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null);
 
     expect(afterRow.content_hash).not.toBe(beforeRow.content_hash);
     const beforeFile = before.files.find((f) => f.path === "typescript/simple/util.ts")!;
@@ -117,7 +117,7 @@ describe("incremental cache", () => {
     cpSync(FIXTURES, repo, { recursive: true });
 
     const storage = new Storage(join(dir, "cache-fileset.db"));
-    analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage);
     const sharedBefore = storage.getFileCache("typescript/coupled/shared.ts")!;
 
     // New file that imports shared.ts, changing shared.ts's fan_in once resolved.
@@ -126,9 +126,9 @@ describe("incremental cache", () => {
       'import { log } from "./shared";\nexport function useLog(): void { log("x"); }\n',
     );
 
-    const after = analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    const after = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage);
     const sharedAfter = storage.getFileCache("typescript/coupled/shared.ts")!;
-    const directUncached = analyzeRepo(repo, DEFAULT_CONFIG);
+    const directUncached = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null);
 
     // content unchanged → same content_hash, but fileset_hash must have moved
     expect(sharedAfter.content_hash).toBe(sharedBefore.content_hash);
