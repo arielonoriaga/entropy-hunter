@@ -67,14 +67,25 @@ const NUMBER = /(?<![\w.])\d+(?:\.\d+)?(?![\w.])/g;
 const STRING_COMPARE = /[=!]={1,2}\s*(['"])(?:\\.|(?!\1).)+\1/g;
 const STRING_ARM = /\bcase\s+(['"])|(['"])(?:\\.|(?!\2).)+\2\s*=>/g;
 
+// Net brace balance of a line (opens minus closes) — used to track whether
+// a multi-line object literal body is still open.
+function braceDelta(line: string): number {
+  return (line.match(/\{/g)?.length ?? 0) - (line.match(/\}/g)?.length ?? 0);
+}
+
 export function countMagic(
   numbersView: string, // comments AND string contents blanked
   stringsView: string, // comments blanked, string contents kept
   constDeclLine: RegExp, // lines declaring named constants — exempt
 ): { numbers: number; strings: number } {
   let numbers = 0;
+  let constBlockDepth = 0; // >0 while inside a multi-line const object literal
   for (const line of numbersView.split("\n")) {
-    if (constDeclLine.test(line)) continue;
+    const isConstDecl = constDeclLine.test(line);
+    if (isConstDecl || constBlockDepth > 0) {
+      constBlockDepth = Math.max(0, constBlockDepth + braceDelta(line));
+      continue; // const declarations and every field nested inside are exempt
+    }
     for (const m of line.match(NUMBER) ?? []) {
       if (!ALLOWED_NUMBERS.has(m)) numbers++;
     }

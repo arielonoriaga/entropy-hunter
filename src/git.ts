@@ -15,10 +15,14 @@ export interface FileChurn {
 
 export class GitError extends Error {}
 
+const MAX_GIT_LOG_BYTES = 256 * 1024 * 1024;
+const MS_PER_DAY = 86_400_000;
+const MS_PER_SECOND = 1000;
+
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], {
     encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
+    maxBuffer: MAX_GIT_LOG_BYTES,
   });
 }
 
@@ -67,7 +71,7 @@ export function sinceToDate(since: string, now = new Date()): string {
     const n = Number(rel[1]);
     if (n === 0) throw new GitError(`--since window cannot be 0${rel[2]}`);
     const days = { d: 1, w: 7, m: 30, y: 365 }[rel[2] as "d" | "w" | "m" | "y"];
-    return new Date(now.getTime() - n * days * 86400_000).toISOString().slice(0, 10);
+    return new Date(now.getTime() - n * days * MS_PER_DAY).toISOString().slice(0, 10);
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(since)) return since;
   throw new GitError(`invalid --since "${since}" — expected e.g. "30d", "12w", "6m", "1y", or "YYYY-MM-DD"`);
@@ -113,7 +117,7 @@ export function churn(repo: string, since: string): Map<string, FileChurn> {
     const header = line.match(/^@[0-9a-f]+\|(\d+)$/);
     if (header) {
       seenThisCommit.clear();
-      currentTs = Number(header[1]) * 1000;
+      currentTs = Number(header[1]) * MS_PER_SECOND;
       continue;
     }
     const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
@@ -124,7 +128,7 @@ export function churn(repo: string, since: string): Map<string, FileChurn> {
     };
     if (!seenThisCommit.has(path)) {
       entry.commits++;
-      entry.weighted_commits += weighted((now - currentTs) / 86400_000);
+      entry.weighted_commits += weighted((now - currentTs) / MS_PER_DAY);
       seenThisCommit.add(path);
       const ts = perFileTimestamps.get(path) ?? [];
       ts.push(currentTs);

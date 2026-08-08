@@ -109,6 +109,20 @@ describe("magic literals", () => {
     expect(magic.numbers).toBe(0);
     expect(magic.strings).toBe(0);
   });
+
+  test("multi-line const object literals are exempt field-by-field, including nested blocks", () => {
+    const src = `export const CONFIG = {
+  retries: 5,
+  timeouts: {
+    connect: 30,
+    read: 90,
+  },
+  label: "prod",
+};
+if (attempt > 12) fail();`;
+    const magic = typescriptAnalyzer.magic(src);
+    expect(magic.numbers).toBe(1); // only the 12 outside the const block
+  });
 });
 
 describe("rust dependency extraction", () => {
