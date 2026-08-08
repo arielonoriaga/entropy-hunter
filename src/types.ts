@@ -29,6 +29,12 @@ export interface FileFacts {
   duplicated_lines: number;
   duplicated_blocks: number;
   duplication_percentage: number;
+  // State-space exposure: optional/boolean fields multiply representable
+  // states (~2^n); illegal-but-representable states breed defensive code.
+  type_count: number; // declared types scanned (structs / interfaces / type literals)
+  optional_fields: number; // Option<T> / `x?:` / `| null | undefined` fields, all types
+  boolean_fields: number; // bool / boolean fields, all types
+  max_state_fields: number; // worst single type: optional + boolean fields
 }
 
 export interface FileScores {
@@ -36,6 +42,7 @@ export interface FileScores {
   coupling_score: number;
   churn_score: number;
   duplication_score: number;
+  state_score: number;
   hotspot_score: number;
   entropy_contribution: number;
 }
@@ -48,10 +55,11 @@ export interface Summary {
   coupling: number;
   churn: number;
   duplication: number;
+  state: number;
 }
 
 export interface AnalysisResult {
-  version: 1;
+  version: 2; // v2: added state signal (state-space exposure)
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -64,11 +72,14 @@ export interface AnalysisResult {
 }
 
 export interface EntropyConfig {
+  // Weights are normalized by their sum at scoring time, so configs that
+  // don't sum to 1 (e.g. pre-state configs missing state_weight) stay sane.
   entropy: {
     complexity_weight: number;
     coupling_weight: number;
     churn_weight: number;
     duplication_weight: number;
+    state_weight: number;
   };
   analysis: { since: string };
   hotspots: {
@@ -85,15 +96,17 @@ export interface EntropyConfig {
     coupling_cap: number;
     churn_commits_cap: number;
     churn_per_line_cap: number;
+    state_fields_cap: number; // optional+bool fields in ONE type scoring 100 (~2^cap states)
   };
 }
 
 export const DEFAULT_CONFIG: EntropyConfig = {
   entropy: {
-    complexity_weight: 0.3,
-    coupling_weight: 0.3,
-    churn_weight: 0.25,
+    complexity_weight: 0.25,
+    coupling_weight: 0.25,
+    churn_weight: 0.2,
     duplication_weight: 0.15,
+    state_weight: 0.15,
   },
   analysis: { since: "30d" },
   hotspots: {
@@ -108,5 +121,6 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     coupling_cap: 20,
     churn_commits_cap: 10,
     churn_per_line_cap: 1.0,
+    state_fields_cap: 6,
   },
 };

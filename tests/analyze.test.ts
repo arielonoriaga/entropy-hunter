@@ -60,9 +60,17 @@ describe("analyzeRepo on fixtures", () => {
   const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
   test("finds both languages", () => {
-    expect(result.files_by_language.rust).toBe(6);
-    expect(result.files_by_language.typescript).toBe(5);
-    expect(result.files_analyzed).toBe(11);
+    expect(result.files_by_language.rust).toBe(7);
+    expect(result.files_by_language.typescript).toBe(6);
+    expect(result.files_analyzed).toBe(13);
+  });
+
+  test("state signal: optional-soup types score high, clean files zero", () => {
+    const rusty = result.files.find((f) => f.path === "rust/stateful/src/lib.rs")!;
+    expect(rusty.max_state_fields).toBe(6);
+    expect(rusty.state_score).toBe(100); // 6 fields at default cap 6
+    const clean = result.files.find((f) => f.path === "rust/simple/src/lib.rs")!;
+    expect(clean.state_score).toBe(0);
   });
 
   test("coupling: fan_in/fan_out are consistent", () => {
@@ -84,14 +92,18 @@ describe("analyzeRepo on fixtures", () => {
     expect(flat).toContain("orders.rs");
   });
 
-  test("entropy index is the configured weighted sum of summary scores", () => {
+  test("entropy index is the weight-sum-normalized combination of summary scores", () => {
     const { summary } = result;
     const w = DEFAULT_CONFIG.entropy;
+    const wsum =
+      w.complexity_weight + w.coupling_weight + w.churn_weight +
+      w.duplication_weight + w.state_weight;
     const expected =
-      summary.complexity * w.complexity_weight +
-      summary.coupling * w.coupling_weight +
-      summary.churn * w.churn_weight +
-      summary.duplication * w.duplication_weight;
+      (summary.complexity * w.complexity_weight +
+        summary.coupling * w.coupling_weight +
+        summary.churn * w.churn_weight +
+        summary.duplication * w.duplication_weight +
+        summary.state * w.state_weight) / wsum;
     expect(summary.entropy).toBeCloseTo(expected, 1);
     expect(summary.entropy).toBeGreaterThanOrEqual(0);
     expect(summary.entropy).toBeLessThanOrEqual(100);
@@ -116,11 +128,11 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 1)", () => {
-    expect(result.version).toBe(1);
+  test("JSON schema shape (version 2)", () => {
+    expect(result.version).toBe(2);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
-    for (const k of ["entropy", "complexity", "coupling", "churn", "duplication"]) {
+    for (const k of ["entropy", "complexity", "coupling", "churn", "duplication", "state"]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
     }
     expect(Array.isArray(result.files)).toBe(true);
@@ -134,7 +146,8 @@ describe("analyzeRepo on fixtures", () => {
       "commits", "lines_added", "lines_deleted", "lines_changed",
       "duplicated_lines", "duplicated_blocks", "duplication_percentage",
       "complexity_score", "coupling_score", "churn_score",
-      "duplication_score", "hotspot_score", "entropy_contribution",
+      "duplication_score", "state_score", "hotspot_score", "entropy_contribution",
+      "type_count", "optional_fields", "boolean_fields", "max_state_fields",
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }

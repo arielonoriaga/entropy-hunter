@@ -48,7 +48,12 @@ interface CachedBase {
   loc: number;
   cx: ComplexityResult;
   fp: FileFingerprint;
+  st: { types: number; optional: number; boolean: number; max: number };
 }
+
+// Bump when CachedBase shape or any metric computation changes, so stale
+// cache rows recompute instead of deserializing into missing fields.
+const CACHE_VERSION = "v2";
 
 export type ProgressFn = (message: string) => void;
 
@@ -103,7 +108,7 @@ export function analyzeRepo(
       progress?.(`analyzing files ${processed}/${sources.size}…`);
     }
     const analyzer = analyzerFor(path)!;
-    const contentHash = String(Bun.hash(src));
+    const contentHash = `${CACHE_VERSION}:${Bun.hash(src)}`;
     const row = storage?.getFileCache(path);
     const contentFresh = row?.content_hash === contentHash;
 
@@ -112,11 +117,18 @@ export function analyzeRepo(
     if (contentFresh) {
       base = JSON.parse(row!.base_json);
     } else {
+      const types = analyzer.stateSpace(src);
       base = {
         language: analyzer.language,
         loc: countNonBlankLines(src),
         cx: analyzer.complexity(src),
         fp: fingerprint(analyzer.normalizedLines(src).map((l) => l.text)),
+        st: {
+          types: types.length,
+          optional: types.reduce((s, t) => s + t.optional_fields, 0),
+          boolean: types.reduce((s, t) => s + t.boolean_fields, 0),
+          max: types.reduce((s, t) => Math.max(s, t.optional_fields + t.boolean_fields), 0),
+        },
       };
     }
     if (contentFresh && row!.fileset_hash === filesetHash) {
@@ -156,6 +168,10 @@ export function analyzeRepo(
       duplicated_lines: 0,
       duplicated_blocks: 0,
       duplication_percentage: 0,
+      type_count: base.st.types,
+      optional_fields: base.st.optional,
+      boolean_fields: base.st.boolean,
+      max_state_fields: base.st.max,
     });
   }
 
@@ -187,6 +203,13 @@ export function analyzeRepo(
   const s = config.scoring;
   const hw = config.hotspots;
   const ew = config.entropy;
+  // Normalize by weight sums so custom configs (or older configs missing a
+  // newer weight) still yield 0-100 indexes.
+  const entropyWeightSum =
+    ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
+      ew.duplication_weight + ew.state_weight || 1;
+  const hotspotWeightSum =
+    hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
   const totalLoc = [...facts.values()].reduce((a, f) => a + f.loc, 0) || 1;
 
   const files: FileMetrics[] = [...facts.values()].map((f) => {
@@ -201,22 +224,27 @@ export function analyzeRepo(
         0.5 * normalize(churnPerLine, s.churn_per_line_cap),
     );
     const duplication_score = round1(f.duplication_percentage);
+    // Worst single type drives the score: one struct with `state_fields_cap`
+    // optional/bool fields (~2^cap representable states) scores 100.
+    const state_score = round1(normalize(f.max_state_fields, s.state_fields_cap));
     const hotspot_score = round1(
-      complexity_score * hw.complexity_weight +
+      (complexity_score * hw.complexity_weight +
         coupling_score * hw.coupling_weight +
-        churn_score * hw.churn_weight,
+        churn_score * hw.churn_weight) / hotspotWeightSum,
     );
     const fileEntropy =
-      complexity_score * ew.complexity_weight +
-      coupling_score * ew.coupling_weight +
-      churn_score * ew.churn_weight +
-      duplication_score * ew.duplication_weight;
+      (complexity_score * ew.complexity_weight +
+        coupling_score * ew.coupling_weight +
+        churn_score * ew.churn_weight +
+        duplication_score * ew.duplication_weight +
+        state_score * ew.state_weight) / entropyWeightSum;
     return {
       ...f,
       complexity_score,
       coupling_score,
       churn_score,
       duplication_score,
+      state_score,
       hotspot_score,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
     };
@@ -232,14 +260,16 @@ export function analyzeRepo(
         coupling: wmean((f) => f.coupling_score),
         churn: wmean((f) => f.churn_score),
         duplication: wmean((f) => f.duplication_score),
+        state: wmean((f) => f.state_score),
         entropy: 0,
       }
-    : { complexity: 0, coupling: 0, churn: 0, duplication: 0, entropy: 0 };
+    : { complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0, entropy: 0 };
   summary.entropy = round1(
-    summary.complexity * ew.complexity_weight +
+    (summary.complexity * ew.complexity_weight +
       summary.coupling * ew.coupling_weight +
       summary.churn * ew.churn_weight +
-      summary.duplication * ew.duplication_weight,
+      summary.duplication * ew.duplication_weight +
+      summary.state * ew.state_weight) / entropyWeightSum,
   );
 
   const byLanguage: Record<string, number> = {};
@@ -250,7 +280,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 1,
+    version: 2,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,

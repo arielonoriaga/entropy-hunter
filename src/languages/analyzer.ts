@@ -12,6 +12,15 @@ export interface DependencyResult {
   external: string[]; // package/crate specifiers
 }
 
+// State-space exposure of one declared type: each optional/boolean field
+// roughly doubles the representable states ("make illegal states
+// unrepresentable" — sum types keep this at 0).
+export interface TypeState {
+  name: string;
+  optional_fields: number;
+  boolean_fields: number;
+}
+
 // Common interface every language plugin implements. The core engine only
 // sees this — no language-specific AST leaks past this boundary.
 export interface LanguageAnalyzer {
@@ -22,6 +31,31 @@ export interface LanguageAnalyzer {
   dependencies(source: string, path: string, fileSet: Set<string>): DependencyResult;
   // Lines eligible for duplication detection: normalized, trivia removed.
   normalizedLines(source: string): { line: number; text: string }[];
+  // Declared data types and their optional/boolean field counts.
+  stateSpace(source: string): TypeState[];
+}
+
+// Extract `{...}` bodies whose opening brace is matched by `header`
+// (header's last matched char must be the `{`). Brace-counted on stripped
+// source, so strings/comments can't unbalance it.
+export function extractBraceBlocks(
+  stripped: string,
+  header: RegExp,
+): { name: string; body: string }[] {
+  const blocks: { name: string; body: string }[] = [];
+  for (const m of stripped.matchAll(header)) {
+    const name = m.slice(1).find((g) => g !== undefined) ?? "<anonymous>";
+    let depth = 1;
+    const start = m.index! + m[0].length;
+    let i = start;
+    while (i < stripped.length && depth > 0) {
+      if (stripped[i] === "{") depth++;
+      else if (stripped[i] === "}") depth--;
+      i++;
+    }
+    blocks.push({ name, body: stripped.slice(start, i - 1) });
+  }
+  return blocks;
 }
 
 // Shared helper: attribute decision tokens to the enclosing function.

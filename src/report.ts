@@ -26,6 +26,7 @@ Complexity:   ${fmt(r.summary.complexity)}
 Coupling:     ${fmt(r.summary.coupling)}
 Churn:        ${fmt(r.summary.churn)}
 Duplication:  ${fmt(r.summary.duplication)}
+State:        ${fmt(r.summary.state)}
 
 Entropy Index: ${fmt(r.summary.entropy)}
 
@@ -75,6 +76,12 @@ Churn
 Duplication
   ${fmt(f.duplication_percentage)}%
 
+State space
+  types: ${f.type_count}
+  optional fields: ${f.optional_fields}
+  boolean fields: ${f.boolean_fields}
+  worst type: ${f.max_state_fields} state fields (~2^${f.max_state_fields} representable states)
+
 Hotspot score: ${Math.round(f.hotspot_score)}`;
 }
 
@@ -112,6 +119,7 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | Coupling | ${fmt(r.summary.coupling)} |
 | Churn | ${fmt(r.summary.churn)} |
 | Duplication | ${fmt(r.summary.duplication)} |
+| State | ${fmt(r.summary.state)} |
 
 Trend: ${trendLabel(r.trend.delta)}
 

@@ -1,5 +1,5 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
-import { complexityFromMarkers, normalizedLinesFrom } from "./analyzer";
+import { complexityFromMarkers, extractBraceBlocks, normalizedLinesFrom } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
 const FN_HEADER = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/g;
@@ -101,5 +101,17 @@ export const rustAnalyzer: LanguageAnalyzer = {
 
   normalizedLines(source) {
     return normalizedLinesFrom(stripped(source));
+  },
+
+  stateSpace(source) {
+    // Struct fields only; enums are the fix, not the smell.
+    return extractBraceBlocks(
+      stripped(source),
+      /\bstruct\s+([A-Za-z_]\w*)[^{;(]*\{/g,
+    ).map(({ name, body }) => ({
+      name,
+      optional_fields: (body.match(/:\s*Option\s*</g) ?? []).length,
+      boolean_fields: (body.match(/:\s*bool\b/g) ?? []).length,
+    }));
   },
 };

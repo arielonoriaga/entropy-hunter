@@ -55,6 +55,29 @@ describe("typescript complexity", () => {
   });
 });
 
+describe("state-space extraction", () => {
+  test("rust: Option and bool struct fields counted; enums contribute nothing", () => {
+    const types = rustAnalyzer.stateSpace(read("rust/stateful/src/lib.rs"));
+    expect(types.length).toBe(1); // Connection only — the enum is not a struct
+    expect(types[0]).toEqual({ name: "Connection", optional_fields: 4, boolean_fields: 2 });
+  });
+
+  test("ts: optional/nullable/boolean interface fields counted; unions contribute nothing", () => {
+    const types = typescriptAnalyzer.stateSpace(read("typescript/stateful/model.ts"));
+    expect(types.length).toBe(1); // Request only — the discriminated union is skipped
+    expect(types[0]).toEqual({ name: "Request", optional_fields: 3, boolean_fields: 2 });
+  });
+
+  test("plain data types score zero", () => {
+    expect(rustAnalyzer.stateSpace("pub struct P { pub x: i32, pub y: i32 }")).toEqual([
+      { name: "P", optional_fields: 0, boolean_fields: 0 },
+    ]);
+    expect(typescriptAnalyzer.stateSpace("interface P { x: number; y: number }")).toEqual([
+      { name: "P", optional_fields: 0, boolean_fields: 0 },
+    ]);
+  });
+});
+
 describe("rust dependency extraction", () => {
   const files = new Set([
     "rust/coupled/src/main.rs",

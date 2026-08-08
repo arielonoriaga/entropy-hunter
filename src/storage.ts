@@ -60,6 +60,21 @@ export class Storage {
       );
       CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    // Additive migrations for DBs created before the state signal (v2).
+    for (const ddl of [
+      "ALTER TABLE snapshots ADD COLUMN state REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE file_metrics ADD COLUMN type_count INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN optional_fields INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN boolean_fields INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN max_state_fields INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN state_score REAL",
+    ]) {
+      try {
+        this.db.exec(ddl);
+      } catch {
+        /* column already exists */
+      }
+    }
   }
 
   // --- incremental analysis cache -----------------------------------------
@@ -112,8 +127,8 @@ export class Storage {
   saveSnapshot(result: AnalysisResult): number {
     const insert = this.db.query(`
       INSERT INTO snapshots (repository, commit_hash, timestamp, entropy,
-        complexity, coupling, churn, duplication, files_analyzed, report_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        complexity, coupling, churn, duplication, state, files_analyzed, report_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
     `);
     const { summary: s } = result;
@@ -126,12 +141,21 @@ export class Storage {
     };
     const row = insert.get(
       result.repository.name, result.repository.commit, result.timestamp,
-      s.entropy, s.complexity, s.coupling, s.churn, s.duplication,
+      s.entropy, s.complexity, s.coupling, s.churn, s.duplication, s.state,
       result.files_analyzed, JSON.stringify(slim),
     ) as { id: number };
 
+    // Named columns: migrated DBs append new columns at the end, so
+    // positional inserts would misalign between fresh and migrated schemas.
     const fm = this.db.query(`
-      INSERT INTO file_metrics VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO file_metrics (snapshot_id, path, language, loc,
+        complexity_total, complexity_average, complexity_max, fan_in, fan_out,
+        dependency_count, dependent_count, commits, lines_added, lines_deleted,
+        duplicated_lines, duplicated_blocks, duplication_percentage,
+        complexity_score, coupling_score, churn_score, duplication_score,
+        hotspot_score, entropy_contribution, type_count, optional_fields,
+        boolean_fields, max_state_fields, state_score)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const tx = this.db.transaction((files: FileMetrics[]) => {
       for (const f of files) {
@@ -142,7 +166,8 @@ export class Storage {
           f.lines_deleted, f.duplicated_lines, f.duplicated_blocks,
           f.duplication_percentage, f.complexity_score, f.coupling_score,
           f.churn_score, f.duplication_score, f.hotspot_score,
-          f.entropy_contribution,
+          f.entropy_contribution, f.type_count, f.optional_fields,
+          f.boolean_fields, f.max_state_fields, f.state_score,
         );
       }
     });

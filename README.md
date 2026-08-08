@@ -57,8 +57,9 @@ not constants of nature:
 | coupling | `norm(fan_in + fan_out, 20)` |
 | churn | `0.5·norm(commits, 10) + 0.5·norm(lines_changed / loc, 1.0)` — normalized per line so big files aren't penalized for size |
 | duplication | duplicated-line percentage (windowed 6-line clone detection) |
-| entropy index | `0.30·complexity + 0.30·coupling + 0.25·churn + 0.15·duplication` (weights in `[entropy]`) |
-| hotspot | `0.35·complexity + 0.35·coupling + 0.30·churn` (weights in `[hotspots]`) |
+| state | `norm(worst_type_state_fields, 6)` — optional + boolean fields of the worst single type. Each such field ~doubles the representable states ("make illegal states unrepresentable"); sum types / discriminated unions score 0 |
+| entropy index | weighted mean of the five scores, normalized by the weight sum (defaults: complexity .25, coupling .25, churn .20, duplication .15, state .15 — `[entropy]`) |
+| hotspot | weighted mean of complexity/coupling/churn (defaults .35/.35/.30 — `[hotspots]`) |
 
 Global summary scores are LOC-weighted means of per-file scores, so each
 file's `entropy_contribution` sums to the global index.

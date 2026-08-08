@@ -1,5 +1,5 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
-import { complexityFromMarkers, normalizedLinesFrom } from "./analyzer";
+import { complexityFromMarkers, extractBraceBlocks, normalizedLinesFrom } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
 const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -95,5 +95,20 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
 
   normalizedLines(source) {
     return normalizedLinesFrom(stripped(source));
+  },
+
+  stateSpace(source) {
+    // Interfaces + object type aliases. Discriminated unions are the fix,
+    // not the smell, so plain `type X = A | B` contributes nothing.
+    return extractBraceBlocks(
+      stripped(source),
+      /\binterface\s+([A-Za-z_$][\w$]*)[^{]*\{|\btype\s+([A-Za-z_$][\w$]*)\s*(?:<[^=]*>)?\s*=\s*\{/g,
+    ).map(({ name, body }) => ({
+      name,
+      optional_fields:
+        (body.match(/[\w$\])]\?\s*:/g) ?? []).length +
+        (body.match(/\|\s*(?:null|undefined)\b/g) ?? []).length,
+      boolean_fields: (body.match(/:\s*boolean\b/g) ?? []).length,
+    }));
   },
 };
