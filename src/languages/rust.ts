@@ -1,5 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
-import { complexityFromMarkers, extractBraceBlocks, normalizedLinesFrom } from "./analyzer";
+import {
+  complexityFromMarkers, extractBraceBlocks, fieldNames, largestPrefixClump, normalizedLinesFrom,
+} from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
 const FN_HEADER = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/g;
@@ -108,10 +110,15 @@ export const rustAnalyzer: LanguageAnalyzer = {
     return extractBraceBlocks(
       stripped(source),
       /\bstruct\s+([A-Za-z_]\w*)[^{;(]*\{/g,
-    ).map(({ name, body }) => ({
-      name,
-      optional_fields: (body.match(/:\s*Option\s*</g) ?? []).length,
-      boolean_fields: (body.match(/:\s*bool\b/g) ?? []).length,
-    }));
+    ).map(({ name, body }) => {
+      const clump = largestPrefixClump(fieldNames(body));
+      return {
+        name,
+        optional_fields: (body.match(/:\s*Option\s*</g) ?? []).length,
+        boolean_fields: (body.match(/:\s*bool\b/g) ?? []).length,
+        clump_fields: clump.fields,
+        clump_prefix: clump.prefix,
+      };
+    });
   },
 };

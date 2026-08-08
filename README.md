@@ -58,7 +58,8 @@ not constants of nature:
 | churn | `0.5·norm(commits, 10) + 0.5·norm(lines_changed / loc, 1.0)` — normalized per line so big files aren't penalized for size |
 | duplication | duplicated-line percentage (windowed 6-line clone detection) |
 | state | `norm(worst_type_state_fields, 6)` — optional + boolean fields of the worst single type. Each such field ~doubles the representable states ("make illegal states unrepresentable"); sum types / discriminated unions score 0 |
-| entropy index | weighted mean of the five scores, normalized by the weight sum (defaults: complexity .25, coupling .25, churn .20, duplication .15, state .15 — `[entropy]`) |
+| clumping | `norm(worst_clump_fields, 6)` — largest group of 3+ fields sharing a name prefix in one type (`order_id`, `order_date`, `order_total` → a flattened Order entity; extract it and reference the existing identity). Boolean prefixes (`is_`, `has_`) excluded — that's the state signal's job |
+| entropy index | weighted mean of the six scores, normalized by the weight sum (defaults: complexity .25, coupling .25, churn .20, duplication .10, state .10, clumping .10 — `[entropy]`) |
 | hotspot | weighted mean of complexity/coupling/churn (defaults .35/.35/.30 — `[hotspots]`) |
 
 Global summary scores are LOC-weighted means of per-file scores, so each

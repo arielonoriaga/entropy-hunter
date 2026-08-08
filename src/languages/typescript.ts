@@ -1,5 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
-import { complexityFromMarkers, extractBraceBlocks, normalizedLinesFrom } from "./analyzer";
+import {
+  complexityFromMarkers, extractBraceBlocks, fieldNames, largestPrefixClump, normalizedLinesFrom,
+} from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
 const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -103,12 +105,17 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
     return extractBraceBlocks(
       stripped(source),
       /\binterface\s+([A-Za-z_$][\w$]*)[^{]*\{|\btype\s+([A-Za-z_$][\w$]*)\s*(?:<[^=]*>)?\s*=\s*\{/g,
-    ).map(({ name, body }) => ({
-      name,
-      optional_fields:
-        (body.match(/[\w$\])]\?\s*:/g) ?? []).length +
-        (body.match(/\|\s*(?:null|undefined)\b/g) ?? []).length,
-      boolean_fields: (body.match(/:\s*boolean\b/g) ?? []).length,
-    }));
+    ).map(({ name, body }) => {
+      const clump = largestPrefixClump(fieldNames(body));
+      return {
+        name,
+        optional_fields:
+          (body.match(/[\w$\])]\?\s*:/g) ?? []).length +
+          (body.match(/\|\s*(?:null|undefined)\b/g) ?? []).length,
+        boolean_fields: (body.match(/:\s*boolean\b/g) ?? []).length,
+        clump_fields: clump.fields,
+        clump_prefix: clump.prefix,
+      };
+    });
   },
 };

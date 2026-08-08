@@ -48,12 +48,15 @@ interface CachedBase {
   loc: number;
   cx: ComplexityResult;
   fp: FileFingerprint;
-  st: { types: number; optional: number; boolean: number; max: number };
+  st: {
+    types: number; optional: number; boolean: number; max: number;
+    clumps: number; maxClump: number; clumpPrefix: string;
+  };
 }
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 
 export type ProgressFn = (message: string) => void;
 
@@ -128,6 +131,12 @@ export function analyzeRepo(
           optional: types.reduce((s, t) => s + t.optional_fields, 0),
           boolean: types.reduce((s, t) => s + t.boolean_fields, 0),
           max: types.reduce((s, t) => Math.max(s, t.optional_fields + t.boolean_fields), 0),
+          clumps: types.filter((t) => t.clump_fields > 0).length,
+          maxClump: types.reduce((s, t) => Math.max(s, t.clump_fields), 0),
+          clumpPrefix: types.reduce(
+            (best, t) => (t.clump_fields > best.clump_fields ? t : best),
+            { clump_fields: 0, clump_prefix: "" },
+          ).clump_prefix,
         },
       };
     }
@@ -172,6 +181,9 @@ export function analyzeRepo(
       optional_fields: base.st.optional,
       boolean_fields: base.st.boolean,
       max_state_fields: base.st.max,
+      data_clumps: base.st.clumps,
+      max_clump_fields: base.st.maxClump,
+      clump_prefix: base.st.clumpPrefix,
     });
   }
 
@@ -207,7 +219,7 @@ export function analyzeRepo(
   // newer weight) still yield 0-100 indexes.
   const entropyWeightSum =
     ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
-      ew.duplication_weight + ew.state_weight || 1;
+      ew.duplication_weight + ew.state_weight + ew.clumping_weight || 1;
   const hotspotWeightSum =
     hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
   const totalLoc = [...facts.values()].reduce((a, f) => a + f.loc, 0) || 1;
@@ -227,6 +239,9 @@ export function analyzeRepo(
     // Worst single type drives the score: one struct with `state_fields_cap`
     // optional/bool fields (~2^cap representable states) scores 100.
     const state_score = round1(normalize(f.max_state_fields, s.state_fields_cap));
+    // Worst single clump drives the score, like state: one type carrying a
+    // `clump_fields_cap`-field flattened entity scores 100.
+    const clumping_score = round1(normalize(f.max_clump_fields, s.clump_fields_cap));
     const hotspot_score = round1(
       (complexity_score * hw.complexity_weight +
         coupling_score * hw.coupling_weight +
@@ -237,7 +252,8 @@ export function analyzeRepo(
         coupling_score * ew.coupling_weight +
         churn_score * ew.churn_weight +
         duplication_score * ew.duplication_weight +
-        state_score * ew.state_weight) / entropyWeightSum;
+        state_score * ew.state_weight +
+        clumping_score * ew.clumping_weight) / entropyWeightSum;
     return {
       ...f,
       complexity_score,
@@ -245,6 +261,7 @@ export function analyzeRepo(
       churn_score,
       duplication_score,
       state_score,
+      clumping_score,
       hotspot_score,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
     };
@@ -261,15 +278,17 @@ export function analyzeRepo(
         churn: wmean((f) => f.churn_score),
         duplication: wmean((f) => f.duplication_score),
         state: wmean((f) => f.state_score),
+        clumping: wmean((f) => f.clumping_score),
         entropy: 0,
       }
-    : { complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0, entropy: 0 };
+    : { complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0, clumping: 0, entropy: 0 };
   summary.entropy = round1(
     (summary.complexity * ew.complexity_weight +
       summary.coupling * ew.coupling_weight +
       summary.churn * ew.churn_weight +
       summary.duplication * ew.duplication_weight +
-      summary.state * ew.state_weight) / entropyWeightSum,
+      summary.state * ew.state_weight +
+      summary.clumping * ew.clumping_weight) / entropyWeightSum,
   );
 
   const byLanguage: Record<string, number> = {};
@@ -280,7 +299,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 2,
+    version: 3,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,

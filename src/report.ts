@@ -27,6 +27,7 @@ Coupling:     ${fmt(r.summary.coupling)}
 Churn:        ${fmt(r.summary.churn)}
 Duplication:  ${fmt(r.summary.duplication)}
 State:        ${fmt(r.summary.state)}
+Clumping:     ${fmt(r.summary.clumping)}
 
 Entropy Index: ${fmt(r.summary.entropy)}
 
@@ -82,6 +83,13 @@ State space
   boolean fields: ${f.boolean_fields}
   worst type: ${f.max_state_fields} state fields (~2^${f.max_state_fields} representable states)
 
+Data clumps
+  groups of 3+ same-prefix fields: ${f.data_clumps}${
+    f.max_clump_fields
+      ? `\n  worst: ${f.max_clump_fields} "${f.clump_prefix}_*" fields — consider extracting a ${f.clump_prefix} entity`
+      : ""
+  }
+
 Hotspot score: ${Math.round(f.hotspot_score)}`;
 }
 
@@ -120,6 +128,7 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | Churn | ${fmt(r.summary.churn)} |
 | Duplication | ${fmt(r.summary.duplication)} |
 | State | ${fmt(r.summary.state)} |
+| Clumping | ${fmt(r.summary.clumping)} |
 
 Trend: ${trendLabel(r.trend.delta)}
 

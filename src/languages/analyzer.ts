@@ -12,13 +12,50 @@ export interface DependencyResult {
   external: string[]; // package/crate specifiers
 }
 
-// State-space exposure of one declared type: each optional/boolean field
-// roughly doubles the representable states ("make illegal states
-// unrepresentable" — sum types keep this at 0).
+// Shape analysis of one declared type.
+// - optional/boolean fields: each roughly doubles the representable states
+//   ("make illegal states unrepresentable" — sum types keep this at 0).
+// - clump: largest group of fields sharing a name prefix (order_id,
+//   order_date, order_total → a flattened Order entity wanting extraction).
 export interface TypeState {
   name: string;
   optional_fields: number;
   boolean_fields: number;
+  clump_fields: number; // size of the largest same-prefix field group (0 if < MIN_CLUMP)
+  clump_prefix: string; // that group's prefix ("" if none)
+}
+
+const MIN_CLUMP = 3; // 2 shared prefixes can be coincidence; 3 is a pattern
+// Not evidence of a flattened entity:
+// - boolean-ish prefixes (is_/has_) describe state — the state signal's job
+// - accessor/callback prefixes (on*/set*/get*/handle*) are idioms, not entities
+const CLUMP_STOPWORDS = new Set([
+  "is", "has", "can", "should", "was", "will",
+  "on", "set", "get", "handle",
+]);
+
+// Largest group of field names sharing a first segment (snake_case or
+// camelCase). Only composite names count — a field named just `order`
+// isn't evidence of a flattened Order.
+export function largestPrefixClump(fieldNames: string[]): { prefix: string; fields: number } {
+  const groups = new Map<string, number>();
+  for (const name of fieldNames) {
+    const prefix = name.split(/_|(?=[A-Z])/)[0].toLowerCase();
+    if (!prefix || prefix === name.toLowerCase()) continue; // not composite
+    if (CLUMP_STOPWORDS.has(prefix)) continue;
+    groups.set(prefix, (groups.get(prefix) ?? 0) + 1);
+  }
+  let best: { prefix: string; fields: number } = { prefix: "", fields: 0 };
+  for (const [prefix, fields] of [...groups].sort()) {
+    if (fields >= MIN_CLUMP && fields > best.fields) best = { prefix, fields };
+  }
+  return best;
+}
+
+// Field names in a struct/interface body: identifier directly followed by
+// `:` (or `?:`). Methods (`foo(): T`) don't match — `(` breaks adjacency.
+export function fieldNames(body: string): string[] {
+  return [...body.matchAll(/([A-Za-z_$][\w$]*)\s*\??:/g)].map((m) => m[1]);
 }
 
 // Common interface every language plugin implements. The core engine only

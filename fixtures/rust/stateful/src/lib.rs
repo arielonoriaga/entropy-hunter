@@ -8,6 +8,14 @@ pub struct Connection {
     pub closing: bool,
 }
 
+// Anti-pattern on purpose: a flattened Order entity (order_* data clump).
+pub struct Invoice {
+    pub order_id: u64,
+    pub order_date: String,
+    pub order_total: i64,
+    pub customer_name: String,
+}
+
 // The fix: illegal states unrepresentable. Contributes nothing to the score.
 pub enum ConnectionState {
     Disconnected,

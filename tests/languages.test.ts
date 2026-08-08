@@ -55,26 +55,35 @@ describe("typescript complexity", () => {
   });
 });
 
-describe("state-space extraction", () => {
+describe("state-space and clump extraction", () => {
   test("rust: Option and bool struct fields counted; enums contribute nothing", () => {
     const types = rustAnalyzer.stateSpace(read("rust/stateful/src/lib.rs"));
-    expect(types.length).toBe(1); // Connection only — the enum is not a struct
-    expect(types[0]).toEqual({ name: "Connection", optional_fields: 4, boolean_fields: 2 });
+    expect(types.map((t) => t.name)).toEqual(["Connection", "Invoice"]); // enum skipped
+    expect(types[0]).toMatchObject({ optional_fields: 4, boolean_fields: 2, clump_fields: 0 });
+    // Invoice: order_id/order_date/order_total clump; customer_name alone is not
+    expect(types[1]).toMatchObject({ clump_fields: 3, clump_prefix: "order" });
   });
 
-  test("ts: optional/nullable/boolean interface fields counted; unions contribute nothing", () => {
+  test("ts: optional/nullable/boolean fields counted; camelCase clumps detected", () => {
     const types = typescriptAnalyzer.stateSpace(read("typescript/stateful/model.ts"));
-    expect(types.length).toBe(1); // Request only — the discriminated union is skipped
-    expect(types[0]).toEqual({ name: "Request", optional_fields: 3, boolean_fields: 2 });
+    expect(types.map((t) => t.name)).toEqual(["Request", "Checkout"]); // union skipped
+    expect(types[0]).toMatchObject({ optional_fields: 3, boolean_fields: 2, clump_fields: 0 });
+    expect(types[1]).toMatchObject({ clump_fields: 3, clump_prefix: "order" });
   });
 
-  test("plain data types score zero", () => {
-    expect(rustAnalyzer.stateSpace("pub struct P { pub x: i32, pub y: i32 }")).toEqual([
-      { name: "P", optional_fields: 0, boolean_fields: 0 },
-    ]);
-    expect(typescriptAnalyzer.stateSpace("interface P { x: number; y: number }")).toEqual([
-      { name: "P", optional_fields: 0, boolean_fields: 0 },
-    ]);
+  test("plain data types score zero on both axes", () => {
+    expect(rustAnalyzer.stateSpace("pub struct P { pub x: i32, pub y: i32 }")[0]).toMatchObject({
+      name: "P", optional_fields: 0, boolean_fields: 0, clump_fields: 0,
+    });
+    expect(typescriptAnalyzer.stateSpace("interface P { x: number; y: number }")[0]).toMatchObject({
+      name: "P", optional_fields: 0, boolean_fields: 0, clump_fields: 0,
+    });
+  });
+
+  test("boolean-ish prefixes (is_/has_) are not clumps; 2 shared prefixes are not enough", () => {
+    const src =
+      "pub struct S { pub is_open: bool, pub is_done: bool, pub is_new: bool, pub user_id: u64, pub user_name: String }";
+    expect(rustAnalyzer.stateSpace(src)[0]).toMatchObject({ clump_fields: 0, clump_prefix: "" });
   });
 });
 
