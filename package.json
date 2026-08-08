@@ -1,0 +1,14 @@
+{
+  "name": "entropy-hunter",
+  "version": "0.1.0",
+  "description": "Deterministic software-entropy analyzer CLI for Rust and TypeScript/JavaScript codebases",
+  "type": "module",
+  "bin": { "entropy": "src/cli.ts" },
+  "scripts": {
+    "entropy": "bun src/cli.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

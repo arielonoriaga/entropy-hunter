@@ -1,0 +1,7 @@
+export function add(a: number, b: number): number {
+  return a + b;
+}
+
+export const greet = (name: string): string => {
+  return `hello ${name}`;
+};
