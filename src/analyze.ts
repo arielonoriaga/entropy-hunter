@@ -50,14 +50,19 @@ interface CachedBase {
   fp: FileFingerprint;
 }
 
+export type ProgressFn = (message: string) => void;
+
 // All parameters are explicit and required — callers resolve defaults
-// (CLI flag > config) before calling. storage: null = run stateless.
+// (CLI flag > config) before calling. storage: null = run stateless;
+// progress: null = silent.
 export function analyzeRepo(
   repo: string,
   config: EntropyConfig,
   since: string,
   storage: Storage | null,
+  progress: ProgressFn | null,
 ): AnalysisResult {
+  progress?.("listing files…");
   const paths = listAnalyzableFiles(repo);
   const fileSet = new Set(paths);
   const filesetHash = String(Bun.hash(paths.join("\n")));
@@ -69,6 +74,7 @@ export function analyzeRepo(
   if (cachedChurn) {
     churnMap = new Map(JSON.parse(cachedChurn));
   } else {
+    progress?.(`computing churn since ${sinceToDate(since)} (git log)…`);
     churnMap = churn(repo, since);
     storage?.kvSet(churnKey, JSON.stringify([...churnMap]));
   }
@@ -91,7 +97,11 @@ export function analyzeRepo(
     base_json: string; deps_json: string;
   }[] = [];
 
+  let processed = 0;
   for (const [path, src] of sources) {
+    if (++processed % 100 === 0 || processed === sources.size) {
+      progress?.(`analyzing files ${processed}/${sources.size}…`);
+    }
     const analyzer = analyzerFor(path)!;
     const contentHash = String(Bun.hash(src));
     const row = storage?.getFileCache(path);
@@ -137,6 +147,8 @@ export function analyzeRepo(
       fan_out: deps.internal.length,
       dependency_count: deps.internal.length + deps.external.length,
       dependent_count: 0,
+      dependencies: deps.internal,
+      dependents: [],
       commits: ch.commits,
       lines_added: ch.lines_added,
       lines_deleted: ch.lines_deleted,
@@ -156,10 +168,13 @@ export function analyzeRepo(
       if (f && dep !== from) {
         f.fan_in++;
         f.dependent_count++;
+        f.dependents.push(from);
       }
     }
   }
+  for (const f of facts.values()) f.dependents.sort();
 
+  progress?.("detecting duplication…");
   // Pass 3: duplication across the whole repo
   for (const [path, dup] of detectDuplication(dupInput)) {
     const f = facts.get(path)!;

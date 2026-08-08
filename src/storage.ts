@@ -121,7 +121,7 @@ export class Storage {
     // future agent gets functions from a fresh `entropy file` call).
     const slim = {
       ...result,
-      files: result.files.map(({ functions, ...rest }) => rest),
+      files: result.files.map(({ functions, dependencies, dependents, ...rest }) => rest),
       hotspots: result.hotspots.map((h) => h.path),
     };
     const row = insert.get(

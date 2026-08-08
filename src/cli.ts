@@ -26,7 +26,7 @@ Options:
   --since <window>        Churn window, e.g. 30d, 12w, 6m (default: config)
   --limit <n>             Row limit for history/hotspots
   --language <lang>       Filter hotspots: rust | typescript
-  --format <fmt>          Report format: text | json | markdown
+  --format <fmt>          Output format for report|file|hotspots: text | json | markdown
   --force                 Allow duplicate snapshot for the same commit
 `;
 
@@ -64,11 +64,23 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
+// Live progress on stderr, only when a human is watching (TTY). Piped or
+// agent-driven runs stay silent so stdout/stderr remain machine-clean.
+const progress = process.stderr.isTTY
+  ? (msg: string) => process.stderr.write(`\r\x1b[K⏳ ${msg}`)
+  : null;
+const clearProgress = () => {
+  if (progress) process.stderr.write("\r\x1b[K");
+};
+
 function analyzeWithTrend(args: Args): AnalysisResult {
   const config = loadConfig(args.repo);
   // Initialized repos get the incremental cache; otherwise run stateless.
   const storage = existsSync(dbPath(args.repo)) ? new Storage(dbPath(args.repo)) : null;
-  const result = analyzeRepo(args.repo, config, args.since ?? config.analysis.since, storage);
+  const result = analyzeRepo(
+    args.repo, config, args.since ?? config.analysis.since, storage, progress,
+  );
+  clearProgress();
   const prev = storage?.latest();
   if (prev) {
     const delta = Math.round((result.summary.entropy - prev.entropy) * 10) / 10;
@@ -139,7 +151,9 @@ function main() {
       const sorted = [...pool].sort(
         (a, b) => b.hotspot_score - a.hotspot_score || a.path.localeCompare(b.path),
       );
-      console.log(renderHotspots(sorted, args.limit ?? config().hotspots.limit));
+      const limit = args.limit ?? config().hotspots.limit;
+      if (args.format === "json") console.log(JSON.stringify(sorted.slice(0, limit), null, 2));
+      else console.log(renderHotspots(sorted, limit));
       break;
     }
 
@@ -156,7 +170,8 @@ function main() {
         console.error(`Not an analyzed file: ${norm}`);
         process.exit(1);
       }
-      console.log(renderFile(f));
+      if (args.format === "json") console.log(JSON.stringify(f, null, 2));
+      else console.log(renderFile(f));
       break;
     }
 

@@ -20,6 +20,8 @@ export interface FileFacts {
   fan_out: number; // internal files this file imports
   dependency_count: number; // fan_out + external imports
   dependent_count: number; // == fan_in
+  dependencies: string[]; // resolved internal deps (for agents: get_dependencies)
+  dependents: string[]; // internal files importing this one (get_dependents)
   commits: number;
   lines_added: number;
   lines_deleted: number;

@@ -57,7 +57,7 @@ describe("cycle detection", () => {
 });
 
 describe("analyzeRepo on fixtures", () => {
-  const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null);
+  const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
   test("finds both languages", () => {
     expect(result.files_by_language.rust).toBe(6);
@@ -141,7 +141,7 @@ describe("analyzeRepo on fixtures", () => {
   });
 
   test("deterministic: analyzing twice yields identical metrics", () => {
-    const again = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null);
+    const again = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
     const strip = (r: typeof result) => ({ ...r, timestamp: null });
     expect(strip(again)).toEqual(strip(result));
   });

@@ -95,6 +95,25 @@ for `get_repository_summary`, `get_file_metrics`, `get_hotspots`,
 `get_history`, `get_dependencies` (per-file internal deps are recomputed on
 demand by `entropy file`).
 
+## AI / agent usage
+
+The CLI is agent-friendly by design:
+
+- **Clean machine output** — progress feedback only renders on a TTY
+  (stderr); piped/agent runs get pure JSON on stdout.
+- **JSON everywhere** — `report --format json` (full graph incl. per-file
+  `dependencies`/`dependents`), `hotspots --format json`,
+  `file <path> --format json` (adds per-function complexity).
+- **Claude Code skill** — `skills/reduce-entropy/SKILL.md` implements a
+  measure → refactor → re-measure loop. Install into a project:
+
+  ```bash
+  mkdir -p .claude/skills && cp -r /path/to/entropy-hunter/skills/reduce-entropy .claude/skills/
+  ```
+
+  then ask Claude Code to "reduce entropy". The skill enforces: one hotspot
+  per commit, tests green at every step, no score-gaming.
+
 ## Known MVP limits
 
 - Complexity/function detection is regex-heuristic (no ternary counting in TS;
