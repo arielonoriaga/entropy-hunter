@@ -1,13 +1,15 @@
 import type { LanguageAnalyzer } from "./analyzer";
+import { genericAnalyzerFor } from "./generic";
 import { rustAnalyzer } from "./rust";
 import { typescriptAnalyzer } from "./typescript";
 
 // Plugin registry — add a language by implementing LanguageAnalyzer and
-// appending it here.
+// appending it here. Anything not covered by a dedicated plugin falls back
+// to the generic (approximate) analyzer.
 export const analyzers: LanguageAnalyzer[] = [rustAnalyzer, typescriptAnalyzer];
 
 export function analyzerFor(path: string): LanguageAnalyzer | null {
-  return analyzers.find((a) => a.detect(path)) ?? null;
+  return analyzers.find((a) => a.detect(path)) ?? genericAnalyzerFor(path);
 }
 
 export type { LanguageAnalyzer } from "./analyzer";

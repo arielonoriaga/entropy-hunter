@@ -73,6 +73,15 @@ export class Storage {
       "ALTER TABLE file_metrics ADD COLUMN max_clump_fields INTEGER",
       "ALTER TABLE file_metrics ADD COLUMN clump_prefix TEXT",
       "ALTER TABLE file_metrics ADD COLUMN clumping_score REAL",
+      "ALTER TABLE snapshots ADD COLUMN deadcode REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE snapshots ADD COLUMN architecture REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE snapshots ADD COLUMN reach REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE file_metrics ADD COLUMN is_orphan INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN transitive_dependents INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN arch_violations INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN deadcode_score REAL",
+      "ALTER TABLE file_metrics ADD COLUMN architecture_score REAL",
+      "ALTER TABLE file_metrics ADD COLUMN reach_score REAL",
     ]) {
       try {
         this.db.exec(ddl);
@@ -132,8 +141,9 @@ export class Storage {
   saveSnapshot(result: AnalysisResult): number {
     const insert = this.db.query(`
       INSERT INTO snapshots (repository, commit_hash, timestamp, entropy,
-        complexity, coupling, churn, duplication, state, clumping, files_analyzed, report_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        complexity, coupling, churn, duplication, state, clumping, deadcode,
+        architecture, reach, files_analyzed, report_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
     `);
     const { summary: s } = result;
@@ -147,7 +157,8 @@ export class Storage {
     const row = insert.get(
       result.repository.name, result.repository.commit, result.timestamp,
       s.entropy, s.complexity, s.coupling, s.churn, s.duplication, s.state,
-      s.clumping, result.files_analyzed, JSON.stringify(slim),
+      s.clumping, s.deadcode, s.architecture, s.reach,
+      result.files_analyzed, JSON.stringify(slim),
     ) as { id: number };
 
     // Named columns: migrated DBs append new columns at the end, so
@@ -160,8 +171,10 @@ export class Storage {
         complexity_score, coupling_score, churn_score, duplication_score,
         hotspot_score, entropy_contribution, type_count, optional_fields,
         boolean_fields, max_state_fields, state_score, data_clumps,
-        max_clump_fields, clump_prefix, clumping_score)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        max_clump_fields, clump_prefix, clumping_score, is_orphan,
+        transitive_dependents, arch_violations, deadcode_score,
+        architecture_score, reach_score)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const tx = this.db.transaction((files: FileMetrics[]) => {
       for (const f of files) {
@@ -175,6 +188,8 @@ export class Storage {
           f.entropy_contribution, f.type_count, f.optional_fields,
           f.boolean_fields, f.max_state_fields, f.state_score, f.data_clumps,
           f.max_clump_fields, f.clump_prefix, f.clumping_score,
+          f.is_orphan ? 1 : 0, f.transitive_dependents, f.arch_violations,
+          f.deadcode_score, f.architecture_score, f.reach_score,
         );
       }
     });

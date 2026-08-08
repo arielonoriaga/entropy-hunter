@@ -184,6 +184,10 @@ export function analyzeRepo(
       data_clumps: base.st.clumps,
       max_clump_fields: base.st.maxClump,
       clump_prefix: base.st.clumpPrefix,
+      is_entrypoint: isEntrypoint(path),
+      is_orphan: false,
+      transitive_dependents: 0,
+      arch_violations: 0,
     });
   }
 
@@ -202,6 +206,29 @@ export function analyzeRepo(
   }
   for (const f of facts.values()) f.dependents.sort();
 
+  progress?.("graph analysis (orphans, reach, architecture)…");
+  const reach = transitiveReach(new Map([...facts].map(([p, f]) => [p, f.dependents])));
+  const layers = config.architecture.layers.split(",").map((l) => l.trim()).filter(Boolean);
+  const architecture_violations: import("./types").ArchViolation[] = [];
+  for (const f of facts.values()) {
+    f.is_orphan = f.fan_in === 0 && !f.is_entrypoint;
+    f.transitive_dependents = reach.get(f.path) ?? 0;
+    const fromLayer = layerOf(f.path, layers);
+    if (fromLayer === -1) continue;
+    for (const dep of f.dependencies) {
+      const toLayer = layerOf(dep, layers);
+      if (toLayer !== -1 && fromLayer < toLayer) {
+        f.arch_violations++;
+        if (architecture_violations.length < 100) {
+          architecture_violations.push({
+            from: f.path, to: dep,
+            from_layer: layers[fromLayer], to_layer: layers[toLayer],
+          });
+        }
+      }
+    }
+  }
+
   progress?.("detecting duplication…");
   // Pass 3: duplication across the whole repo
   for (const [path, dup] of detectDuplication(dupInput)) {
@@ -219,7 +246,9 @@ export function analyzeRepo(
   // newer weight) still yield 0-100 indexes.
   const entropyWeightSum =
     ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
-      ew.duplication_weight + ew.state_weight + ew.clumping_weight || 1;
+      ew.duplication_weight + ew.state_weight + ew.clumping_weight +
+      ew.deadcode_weight + ew.architecture_weight + ew.reach_weight || 1;
+  const totalFiles = Math.max(facts.size - 1, 1);
   const hotspotWeightSum =
     hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
   const totalLoc = [...facts.values()].reduce((a, f) => a + f.loc, 0) || 1;
@@ -242,6 +271,11 @@ export function analyzeRepo(
     // Worst single clump drives the score, like state: one type carrying a
     // `clump_fields_cap`-field flattened entity scores 100.
     const clumping_score = round1(normalize(f.max_clump_fields, s.clump_fields_cap));
+    const deadcode_score = f.is_orphan ? 100 : 0;
+    const architecture_score = round1(normalize(f.arch_violations, s.arch_violations_cap));
+    const reach_score = round1(
+      normalize((f.transitive_dependents / totalFiles) * 100, s.reach_percent_cap),
+    );
     const hotspot_score = round1(
       (complexity_score * hw.complexity_weight +
         coupling_score * hw.coupling_weight +
@@ -253,7 +287,10 @@ export function analyzeRepo(
         churn_score * ew.churn_weight +
         duplication_score * ew.duplication_weight +
         state_score * ew.state_weight +
-        clumping_score * ew.clumping_weight) / entropyWeightSum;
+        clumping_score * ew.clumping_weight +
+        deadcode_score * ew.deadcode_weight +
+        architecture_score * ew.architecture_weight +
+        reach_score * ew.reach_weight) / entropyWeightSum;
     return {
       ...f,
       complexity_score,
@@ -262,6 +299,9 @@ export function analyzeRepo(
       duplication_score,
       state_score,
       clumping_score,
+      deadcode_score,
+      architecture_score,
+      reach_score,
       hotspot_score,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
     };
@@ -279,16 +319,25 @@ export function analyzeRepo(
         duplication: wmean((f) => f.duplication_score),
         state: wmean((f) => f.state_score),
         clumping: wmean((f) => f.clumping_score),
+        deadcode: wmean((f) => f.deadcode_score),
+        architecture: wmean((f) => f.architecture_score),
+        reach: wmean((f) => f.reach_score),
         entropy: 0,
       }
-    : { complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0, clumping: 0, entropy: 0 };
+    : {
+        complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
+        clumping: 0, deadcode: 0, architecture: 0, reach: 0, entropy: 0,
+      };
   summary.entropy = round1(
     (summary.complexity * ew.complexity_weight +
       summary.coupling * ew.coupling_weight +
       summary.churn * ew.churn_weight +
       summary.duplication * ew.duplication_weight +
       summary.state * ew.state_weight +
-      summary.clumping * ew.clumping_weight) / entropyWeightSum,
+      summary.clumping * ew.clumping_weight +
+      summary.deadcode * ew.deadcode_weight +
+      summary.architecture * ew.architecture_weight +
+      summary.reach * ew.reach_weight) / entropyWeightSum,
   );
 
   const byLanguage: Record<string, number> = {};
@@ -299,7 +348,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 3,
+    version: 4,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,
@@ -308,8 +357,54 @@ export function analyzeRepo(
     files: files.sort((a, b) => a.path.localeCompare(b.path)),
     hotspots,
     cycles: findCycles(depGraph),
+    architecture_violations,
     trend: { delta: null, velocity: null },
   };
+}
+
+// Files that legitimately have no importers: entrypoints, tests, configs.
+const ENTRY_BASENAMES = new Set([
+  "main.rs", "lib.rs", "mod.rs", "build.rs",
+  "index.ts", "index.tsx", "index.js", "index.mjs",
+  "main.ts", "main.tsx", "main.js", "app.ts", "app.tsx", "cli.ts",
+]);
+export function isEntrypoint(path: string): boolean {
+  const base = path.split("/").pop()!;
+  if (ENTRY_BASENAMES.has(base)) return true;
+  if (/\.(test|spec|stories|config|setup)\.[\w.]+$/.test(base)) return true;
+  // Rust test modules are pulled in via `#[cfg(test)] mod x;` — attribute
+  // and declaration share a line, which the mod-import regex doesn't track.
+  if (/(_tests?|^tests?)\.rs$/.test(base)) return true;
+  if (/\.(sh|bash|zsh)$/.test(base)) return true; // scripts run, not import
+  return /(^|\/)(bin|tests|__tests__|examples|benches|migrations|scripts)\//.test(path);
+}
+
+// Transitive dependents per file: BFS over the inverted dependency graph.
+export function transitiveReach(dependents: Map<string, string[]>): Map<string, number> {
+  const reach = new Map<string, number>();
+  for (const start of dependents.keys()) {
+    const seen = new Set<string>([start]);
+    const queue = [start];
+    while (queue.length) {
+      for (const dep of dependents.get(queue.pop()!) ?? []) {
+        if (!seen.has(dep)) {
+          seen.add(dep);
+          queue.push(dep);
+        }
+      }
+    }
+    reach.set(start, seen.size - 1);
+  }
+  return reach;
+}
+
+// First path segment matching a configured layer name decides the layer.
+export function layerOf(path: string, layers: string[]): number {
+  for (const seg of path.split("/")) {
+    const i = layers.indexOf(seg);
+    if (i !== -1) return i;
+  }
+  return -1;
 }
 
 // Iterative DFS collecting distinct dependency cycles (capped for sanity).

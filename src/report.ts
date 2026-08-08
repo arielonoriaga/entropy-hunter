@@ -28,11 +28,18 @@ Churn:        ${fmt(r.summary.churn)}
 Duplication:  ${fmt(r.summary.duplication)}
 State:        ${fmt(r.summary.state)}
 Clumping:     ${fmt(r.summary.clumping)}
+Dead code:    ${fmt(r.summary.deadcode)}
+Architecture: ${fmt(r.summary.architecture)}
+Reach:        ${fmt(r.summary.reach)}
 
 Entropy Index: ${fmt(r.summary.entropy)}
 
 Trend: ${trendLabel(r.trend.delta)}${
     r.cycles.length ? `\n\nCircular dependencies: ${r.cycles.length} (see report --format json)` : ""
+  }${
+    r.architecture_violations.length
+      ? `\nArchitecture violations: ${r.architecture_violations.length} (see report --format json)`
+      : ""
   }`;
 }
 
@@ -90,6 +97,11 @@ Data clumps
       : ""
   }
 
+Graph
+  transitive dependents: ${f.transitive_dependents}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${
+    f.arch_violations ? `\n  architecture violations: ${f.arch_violations} inner→outer imports` : ""
+  }
+
 Hotspot score: ${Math.round(f.hotspot_score)}`;
 }
 
@@ -129,6 +141,9 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | Duplication | ${fmt(r.summary.duplication)} |
 | State | ${fmt(r.summary.state)} |
 | Clumping | ${fmt(r.summary.clumping)} |
+| Dead code | ${fmt(r.summary.deadcode)} |
+| Architecture | ${fmt(r.summary.architecture)} |
+| Reach | ${fmt(r.summary.reach)} |
 
 Trend: ${trendLabel(r.trend.delta)}
 

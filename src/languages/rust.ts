@@ -58,7 +58,8 @@ export const rustAnalyzer: LanguageAnalyzer = {
     const stem = path.replace(/\.rs$/, "");
 
     // mod x; → sibling module file
-    for (const m of src.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
+    // (^|;|]) start: also catches `#[cfg(test)] mod x;` sharing the attribute's line
+    for (const m of src.matchAll(/(?:^|;|\])\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
       const name = m[1];
       const hit = tryPaths(fileSet, [
         `${dir ? dir + "/" : ""}${name}.rs`,

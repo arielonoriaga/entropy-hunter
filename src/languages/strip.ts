@@ -4,8 +4,13 @@
 // nested template-literal expressions or nested block comments; good enough
 // for counting decision tokens.
 // singleQuotes: false for Rust — `'` is usually a lifetime, not a string.
-export function stripCommentsAndStrings(src: string, opts: { singleQuotes?: boolean } = {}): string {
+// hashComments: true for Python/Ruby/shell-style `#` line comments.
+export function stripCommentsAndStrings(
+  src: string,
+  opts: { singleQuotes?: boolean; hashComments?: boolean } = {},
+): string {
   const singleQuotes = opts.singleQuotes ?? true;
+  const hashComments = opts.hashComments ?? false;
   const out: string[] = [];
   let i = 0;
   const n = src.length;
@@ -13,7 +18,7 @@ export function stripCommentsAndStrings(src: string, opts: { singleQuotes?: bool
   while (i < n) {
     const c = src[i];
     const next = src[i + 1];
-    if (c === "/" && next === "/") {
+    if ((c === "/" && next === "/") || (c === "#" && hashComments)) {
       while (i < n && src[i] !== "\n") push(src[i++]);
     } else if (c === "/" && next === "*") {
       push(src[i++]);

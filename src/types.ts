@@ -40,6 +40,11 @@ export interface FileFacts {
   data_clumps: number; // prefix groups of 3+ fields across all types
   max_clump_fields: number; // worst single group size
   clump_prefix: string; // that group's prefix ("" if none)
+  // Graph-derived (recomputed each run, not content-cached):
+  is_entrypoint: boolean; // main/lib/index/bin/tests — legitimately importless
+  is_orphan: boolean; // fan_in == 0 and not an entrypoint: likely dead
+  transitive_dependents: number; // files that can break when this one changes
+  arch_violations: number; // imports that point inner→outer against [architecture] layers
 }
 
 export interface FileScores {
@@ -49,6 +54,9 @@ export interface FileScores {
   duplication_score: number;
   state_score: number;
   clumping_score: number;
+  deadcode_score: number;
+  architecture_score: number;
+  reach_score: number;
   hotspot_score: number;
   entropy_contribution: number;
 }
@@ -63,10 +71,21 @@ export interface Summary {
   duplication: number;
   state: number;
   clumping: number;
+  deadcode: number;
+  architecture: number;
+  reach: number;
+}
+
+export interface ArchViolation {
+  from: string;
+  to: string;
+  from_layer: string;
+  to_layer: string;
 }
 
 export interface AnalysisResult {
-  version: 3; // v2: state signal (state-space exposure); v3: clumping signal (data clumps)
+  // v2: state signal; v3: clumping; v4: deadcode + architecture + reach
+  version: 4;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -75,6 +94,7 @@ export interface AnalysisResult {
   files: FileMetrics[];
   hotspots: FileMetrics[];
   cycles: string[][];
+  architecture_violations: ArchViolation[]; // capped at 100
   trend: { delta: number | null; velocity: number | null };
 }
 
@@ -88,8 +108,15 @@ export interface EntropyConfig {
     duplication_weight: number;
     state_weight: number;
     clumping_weight: number;
+    deadcode_weight: number;
+    architecture_weight: number;
+    reach_weight: number;
   };
   analysis: { since: string };
+  // Layer names inner→outer, matched against path segments. A file in an
+  // inner layer importing an outer one is a violation (hexagonal direction).
+  // Files whose path matches no layer are exempt.
+  architecture: { layers: string };
   hotspots: {
     limit: number;
     complexity_weight: number;
@@ -106,19 +133,25 @@ export interface EntropyConfig {
     churn_per_line_cap: number;
     state_fields_cap: number; // optional+bool fields in ONE type scoring 100 (~2^cap states)
     clump_fields_cap: number; // same-prefix fields in ONE type scoring 100
+    arch_violations_cap: number; // inner→outer imports in ONE file scoring 100
+    reach_percent_cap: number; // % of repo transitively depending on ONE file scoring 100
   };
 }
 
 export const DEFAULT_CONFIG: EntropyConfig = {
   entropy: {
-    complexity_weight: 0.25,
-    coupling_weight: 0.25,
-    churn_weight: 0.2,
+    complexity_weight: 0.2,
+    coupling_weight: 0.2,
+    churn_weight: 0.15,
     duplication_weight: 0.1,
     state_weight: 0.1,
     clumping_weight: 0.1,
+    deadcode_weight: 0.05,
+    architecture_weight: 0.05,
+    reach_weight: 0.05,
   },
   analysis: { since: "30d" },
+  architecture: { layers: "domain, application, infrastructure, api" },
   hotspots: {
     limit: 20,
     complexity_weight: 0.35,
@@ -133,5 +166,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     churn_per_line_cap: 1.0,
     state_fields_cap: 6,
     clump_fields_cap: 6,
+    arch_violations_cap: 3,
+    reach_percent_cap: 25,
   },
 };

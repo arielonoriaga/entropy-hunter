@@ -28,6 +28,7 @@ export function initRepo(repo: string): { created: boolean } {
       toToml({
         entropy: { ...DEFAULT_CONFIG.entropy },
         analysis: { ...DEFAULT_CONFIG.analysis },
+        architecture: { ...DEFAULT_CONFIG.architecture },
         hotspots: { ...DEFAULT_CONFIG.hotspots },
         scoring: { ...DEFAULT_CONFIG.scoring },
       }),
@@ -40,7 +41,7 @@ export function loadConfig(repo: string): EntropyConfig {
   const cfg: EntropyConfig = structuredClone(DEFAULT_CONFIG);
   if (!existsSync(path)) return cfg;
   const toml = parseToml(readFileSync(path, "utf8"));
-  for (const section of ["entropy", "analysis", "hotspots", "scoring"] as const) {
+  for (const section of ["entropy", "analysis", "architecture", "hotspots", "scoring"] as const) {
     const sec = toml[section];
     if (!sec) continue;
     for (const [k, v] of Object.entries(sec)) {

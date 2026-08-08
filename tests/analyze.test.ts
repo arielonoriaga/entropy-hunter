@@ -59,10 +59,56 @@ describe("cycle detection", () => {
 describe("analyzeRepo on fixtures", () => {
   const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
-  test("finds both languages", () => {
+  test("finds dedicated and generic-fallback languages", () => {
     expect(result.files_by_language.rust).toBe(7);
-    expect(result.files_by_language.typescript).toBe(6);
-    expect(result.files_analyzed).toBe(13);
+    expect(result.files_by_language.typescript).toBe(9);
+    expect(result.files_by_language.python).toBe(2); // generic fallback
+    expect(result.files_analyzed).toBe(18);
+  });
+
+  test("generic analyzer: python complexity and imports resolve", () => {
+    const worker = result.files.find((f) => f.path === "python/worker.py")!;
+    expect(worker.language).toBe("python");
+    // process: for + if + and + elif = 5
+    expect(worker.complexity_max).toBe(5);
+    expect(worker.dependencies).toEqual(["python/helpers.py"]);
+    const helpers = result.files.find((f) => f.path === "python/helpers.py")!;
+    expect(helpers.fan_in).toBe(1);
+    expect(helpers.complexity_max).toBe(2); // clamp: 1 + if (comment stripped)
+  });
+
+  test("dead code: unimported non-entrypoint files are orphans", () => {
+    const orphan = result.files.find((f) => f.path === "typescript/simple/util.ts")!;
+    expect(orphan.is_orphan).toBe(true);
+    expect(orphan.deadcode_score).toBe(100);
+    const imported = result.files.find((f) => f.path === "typescript/coupled/shared.ts")!;
+    expect(imported.is_orphan).toBe(false);
+    const entry = result.files.find((f) => f.path === "rust/simple/src/lib.rs")!;
+    expect(entry.is_entrypoint).toBe(true);
+    expect(entry.deadcode_score).toBe(0);
+  });
+
+  test("architecture: domain importing infrastructure is a violation, reverse is not", () => {
+    const bad = result.files.find((f) => f.path === "typescript/layered/domain/service.ts")!;
+    expect(bad.arch_violations).toBe(1);
+    expect(bad.architecture_score).toBeGreaterThan(0);
+    const ok = result.files.find((f) => f.path === "typescript/layered/infrastructure/repo.ts")!;
+    expect(ok.arch_violations).toBe(0);
+    expect(result.architecture_violations).toEqual([
+      {
+        from: "typescript/layered/domain/service.ts",
+        to: "typescript/layered/infrastructure/repo.ts",
+        from_layer: "domain",
+        to_layer: "infrastructure",
+      },
+    ]);
+  });
+
+  test("reach: transitive dependents counted through the graph", () => {
+    const model = result.files.find((f) => f.path === "typescript/layered/domain/model.ts")!;
+    expect(model.transitive_dependents).toBe(2); // repo.ts directly, service.ts through it
+    expect(model.fan_in).toBe(1);
+    expect(model.reach_score).toBeGreaterThan(0);
   });
 
   test("state signal: optional-soup types score high, clean files zero", () => {
@@ -105,16 +151,13 @@ describe("analyzeRepo on fixtures", () => {
   test("entropy index is the weight-sum-normalized combination of summary scores", () => {
     const { summary } = result;
     const w = DEFAULT_CONFIG.entropy;
-    const wsum =
-      w.complexity_weight + w.coupling_weight + w.churn_weight +
-      w.duplication_weight + w.state_weight + w.clumping_weight;
+    const keys = [
+      "complexity", "coupling", "churn", "duplication", "state",
+      "clumping", "deadcode", "architecture", "reach",
+    ] as const;
+    const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     const expected =
-      (summary.complexity * w.complexity_weight +
-        summary.coupling * w.coupling_weight +
-        summary.churn * w.churn_weight +
-        summary.duplication * w.duplication_weight +
-        summary.state * w.state_weight +
-        summary.clumping * w.clumping_weight) / wsum;
+      keys.reduce((s, k) => s + (summary as any)[k] * (w as any)[`${k}_weight`], 0) / wsum;
     expect(summary.entropy).toBeCloseTo(expected, 1);
     expect(summary.entropy).toBeGreaterThanOrEqual(0);
     expect(summary.entropy).toBeLessThanOrEqual(100);
@@ -139,11 +182,15 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 3)", () => {
-    expect(result.version).toBe(3);
+  test("JSON schema shape (version 4)", () => {
+    expect(result.version).toBe(4);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
-    for (const k of ["entropy", "complexity", "coupling", "churn", "duplication", "state", "clumping"]) {
+    expect(Array.isArray(result.architecture_violations)).toBe(true);
+    for (const k of [
+      "entropy", "complexity", "coupling", "churn", "duplication",
+      "state", "clumping", "deadcode", "architecture", "reach",
+    ]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
     }
     expect(Array.isArray(result.files)).toBe(true);
@@ -157,9 +204,11 @@ describe("analyzeRepo on fixtures", () => {
       "commits", "lines_added", "lines_deleted", "lines_changed",
       "duplicated_lines", "duplicated_blocks", "duplication_percentage",
       "complexity_score", "coupling_score", "churn_score",
-      "duplication_score", "state_score", "clumping_score", "hotspot_score",
+      "duplication_score", "state_score", "clumping_score", "deadcode_score",
+      "architecture_score", "reach_score", "hotspot_score",
       "entropy_contribution", "type_count", "optional_fields", "boolean_fields",
       "max_state_fields", "data_clumps", "max_clump_fields",
+      "transitive_dependents", "arch_violations",
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }

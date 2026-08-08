@@ -59,7 +59,10 @@ not constants of nature:
 | duplication | duplicated-line percentage (windowed 6-line clone detection) |
 | state | `norm(worst_type_state_fields, 6)` — optional + boolean fields of the worst single type. Each such field ~doubles the representable states ("make illegal states unrepresentable"); sum types / discriminated unions score 0 |
 | clumping | `norm(worst_clump_fields, 6)` — largest group of 3+ fields sharing a name prefix in one type (`order_id`, `order_date`, `order_total` → a flattened Order entity; extract it and reference the existing identity). Boolean prefixes (`is_`, `has_`) excluded — that's the state signal's job |
-| entropy index | weighted mean of the six scores, normalized by the weight sum (defaults: complexity .25, coupling .25, churn .20, duplication .10, state .10, clumping .10 — `[entropy]`) |
+| deadcode | 100 if the file is an orphan (fan-in 0 and not an entrypoint/test/config), else 0. LOC-weighted summary = % of code nothing imports |
+| architecture | `norm(inner→outer imports, 3)` — `[architecture] layers` lists layer names inner→outer (default `domain, application, infrastructure, api`), matched against path segments; a domain file importing infrastructure is a violation (hexagonal direction). Unlayered paths are exempt |
+| reach | `norm(transitive dependents as % of repo, 25)` — how much of the codebase can break when this file changes |
+| entropy index | weighted mean of the nine scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05 — `[entropy]`) |
 | hotspot | weighted mean of complexity/coupling/churn (defaults .35/.35/.30 — `[hotspots]`) |
 
 Global summary scores are LOC-weighted means of per-file scores, so each
@@ -88,8 +91,16 @@ src/
 ```
 
 Adding a language = implement `LanguageAnalyzer` (detect / complexity /
-dependencies / normalizedLines) and register it in `languages/index.ts`.
-The engine never sees language-specific structures.
+dependencies / normalizedLines / stateSpace) and register it in
+`languages/index.ts`. The engine never sees language-specific structures.
+
+**Language-agnostic by default**: files not covered by a dedicated plugin
+fall back to a generic analyzer (`languages/generic.ts`) covering Python,
+Go, Java, Ruby, PHP, C/C++, C#, Kotlin, Swift, Scala, Dart, Lua, Elixir,
+shell, Zig. For those, churn / duplication / LOC / dead-code / reach are
+exact; complexity and dependencies are regex-approximate; state/clumping
+are skipped. A dedicated plugin upgrades a language from approximate to
+precise without touching the engine.
 
 The JSON report (`report --format json`, `"version": 1`) plus the SQLite
 schema (`snapshots`, `file_metrics`) carry everything a future agent needs
