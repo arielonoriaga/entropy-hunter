@@ -1,7 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
   complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
-  findSharedConditionGroups, largestPrefixClump, normalizedLinesFrom,
+  findSharedConditionGroups, isTestFile, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
@@ -118,6 +118,14 @@ export const rustAnalyzer: LanguageAnalyzer = {
   sharedConditions(source) {
     // Rust `if` has no parens: `if a && b {`.
     return findSharedConditionGroups(stripped(source), /^(\s*)if\s+(.+?)\s*\{\s*$/);
+  },
+
+  testCoverage(source, path) {
+    if (isTestFile(path)) return { has_test: true, test_path: "" };
+    // Idiomatic Rust: unit tests live inline in an `#[cfg(test)] mod tests`
+    // block within the same file, not a separate companion file.
+    const inline = /#\[cfg\(test\)\]|#\[test\]/.test(source);
+    return { has_test: inline, test_path: inline ? "(inline)" : "" };
   },
 
   stateSpace(source) {

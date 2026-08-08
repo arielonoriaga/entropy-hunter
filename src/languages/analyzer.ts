@@ -166,6 +166,28 @@ export interface LanguageAnalyzer {
   magic(source: string): { numbers: number; strings: number };
   // Sibling ifs sharing a leading guard conjunct — see findSharedConditionGroups.
   sharedConditions(source: string): ConditionGroup[];
+  // Does this file have a corresponding test (companion file or, for Rust,
+  // an inline #[cfg(test)] module)? fileSet enables companion-file lookup.
+  testCoverage(source: string, path: string, fileSet: Set<string>): TestCoverage;
+}
+
+export interface TestCoverage {
+  has_test: boolean;
+  test_path: string; // companion file path, "(inline)" for Rust, "" if none
+}
+
+// A file IS a test itself — by naming convention, shared across all
+// languages entropy-hunter analyzes. Single source of truth: also used to
+// decide whether a file NEEDS a companion test (a test doesn't need one).
+export function isTestFile(path: string): boolean {
+  const base = path.split("/").pop()!;
+  return (
+    /\.(test|spec)\.[\w.]+$/.test(base) || // foo.test.ts, foo.spec.ts
+    /_test\.go$/.test(base) || // Go convention
+    /(^test_|_test)\.py$/.test(base) || // Python convention (either order)
+    /(_tests?|^tests?)\.rs$/.test(base) || // Rust file wholly dedicated to tests
+    /(^|\/)(tests|__tests__)\//.test(path)
+  );
 }
 
 // Extract `{...}` bodies whose opening brace is matched by `header`

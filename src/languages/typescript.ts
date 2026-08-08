@@ -1,8 +1,13 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
   complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
-  findSharedConditionGroups, largestPrefixClump, normalizedLinesFrom,
+  findSharedConditionGroups, isTestFile, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
+
+const TEST_SUFFIXES = [
+  ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
+  ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx",
+];
 import { stripCommentsAndStrings } from "./strip";
 
 const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -110,6 +115,21 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
 
   sharedConditions(source) {
     return findSharedConditionGroups(stripped(source), /^(\s*)if\s*\((.+)\)\s*\{?\s*$/);
+  },
+
+  testCoverage(_source, path, fileSet) {
+    if (isTestFile(path)) return { has_test: true, test_path: "" };
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    const stem = path.replace(/\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/, "");
+    const base = stem.split("/").pop()!;
+    const candidates = [
+      ...TEST_SUFFIXES.map((s) => `${stem}${s}`), // co-located: dir/foo.test.ts
+      ...TEST_SUFFIXES.map((s) => `${dir}/__tests__/${base}${s}`), // dir/__tests__/foo.test.ts
+      // this repo's own convention: src/foo.ts -> tests/foo.test.ts
+      ...(path.startsWith("src/") ? TEST_SUFFIXES.map((s) => `tests/${stem.slice(4)}${s}`) : []),
+    ];
+    const found = candidates.find((c) => fileSet.has(c)) ?? "";
+    return { has_test: !!found, test_path: found };
   },
 
   stateSpace(source) {

@@ -48,6 +48,10 @@ export interface FileFacts {
   guard_clumps: number; // groups of 2+ sibling ifs sharing a leading conjunct
   max_guard_group: number; // worst single group's ifs count
   guard_prefix: string; // that group's shared leading condition ("" if none)
+  // Test coverage presence (not quality): does this file have a companion
+  // test (or, for Rust, an inline #[cfg(test)] module)?
+  has_test: boolean;
+  test_path: string; // companion path, "(inline)" for Rust, "" if none
   // Graph-derived (recomputed each run, not content-cached):
   // Magic literals: unnamed numbers in logic, strings in comparisons/arms.
   magic_numbers: number;
@@ -70,6 +74,9 @@ export interface FileScores {
   reach_score: number;
   magic_score: number;
   guard_score: number;
+  // 0 if tested or trivial (no complexity to protect); otherwise scales
+  // with how much untested complexity/logic this file exposes.
+  test_score: number;
   // One sentence naming the dominant raw fact behind hotspot_score, so an
   // agent (or human) doesn't have to reverse-engineer which signal fired.
   why: string;
@@ -92,6 +99,7 @@ export interface Summary {
   reach: number;
   magic: number;
   guard: number;
+  test: number;
 }
 
 export interface ArchViolation {
@@ -104,8 +112,8 @@ export interface ArchViolation {
 export interface AnalysisResult {
   // v2: state; v3: clumping; v4: deadcode+architecture+reach; v5: magic;
   // v6: weighted/trending churn, files_skipped, hotspot why-strings;
-  // v7: guard (shared-condition / consolidate-conditional-expression) signal
-  version: 7;
+  // v7: guard (shared-condition) signal; v8: test-coverage-presence signal
+  version: 8;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -134,6 +142,7 @@ export interface EntropyConfig {
     reach_weight: number;
     magic_weight: number;
     guard_weight: number;
+    test_weight: number;
   };
   analysis: { since: string };
   // Layer names inner→outer, matched against path segments. A file in an
@@ -160,6 +169,7 @@ export interface EntropyConfig {
     reach_percent_cap: number; // % of repo transitively depending on ONE file scoring 100
     magic_per_100loc_cap: number; // magic literals per 100 LOC scoring 100 (density, not raw count)
     guard_group_cap: number; // sibling ifs in ONE shared-guard group scoring 100
+    test_complexity_cap: number; // complexity_total of an untested file scoring 100
   };
 }
 
@@ -176,6 +186,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     reach_weight: 0.05,
     magic_weight: 0.05,
     guard_weight: 0.05,
+    test_weight: 0.1,
   },
   analysis: { since: "30d" },
   architecture: { layers: "domain, application, infrastructure, api" },
@@ -197,5 +208,6 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     reach_percent_cap: 25,
     magic_per_100loc_cap: 5,
     guard_group_cap: 4,
+    test_complexity_cap: 20,
   },
 };

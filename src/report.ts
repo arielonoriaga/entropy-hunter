@@ -33,6 +33,7 @@ Architecture: ${fmt(r.summary.architecture)}
 Reach:        ${fmt(r.summary.reach)}
 Magic:        ${fmt(r.summary.magic)}
 Guard:        ${fmt(r.summary.guard)}
+Test:         ${fmt(r.summary.test)}
 
 Entropy Index: ${fmt(r.summary.entropy)}
 
@@ -110,6 +111,9 @@ Guard clumps
       : ""
   }
 
+Test coverage
+  ${f.has_test ? `covered (${f.test_path})` : "NO TEST FOUND"}
+
 Graph
   transitive dependents: ${f.transitive_dependents}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${
     f.arch_violations ? `\n  architecture violations: ${f.arch_violations} inner→outer imports` : ""
@@ -159,6 +163,7 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | Reach | ${fmt(r.summary.reach)} |
 | Magic | ${fmt(r.summary.magic)} |
 | Guard | ${fmt(r.summary.guard)} |
+| Test | ${fmt(r.summary.test)} |
 
 Trend: ${trendLabel(r.trend.delta)}
 

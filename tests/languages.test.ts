@@ -198,6 +198,44 @@ describe("shared-condition (guard clump) detection", () => {
   });
 });
 
+describe("test-coverage-presence detection", () => {
+  test("ts: co-located companion test file found", () => {
+    const fileSet = new Set(["typescript/tested/math.ts", "typescript/tested/math.test.ts"]);
+    const tc = typescriptAnalyzer.testCoverage(
+      read("typescript/tested/math.ts"), "typescript/tested/math.ts", fileSet,
+    );
+    expect(tc).toEqual({ has_test: true, test_path: "typescript/tested/math.test.ts" });
+  });
+
+  test("ts: no companion test file found", () => {
+    const fileSet = new Set(["typescript/complex/logic.ts"]);
+    const tc = typescriptAnalyzer.testCoverage(
+      read("typescript/complex/logic.ts"), "typescript/complex/logic.ts", fileSet,
+    );
+    expect(tc).toEqual({ has_test: false, test_path: "" });
+  });
+
+  test("ts: a test file itself never needs a test", () => {
+    const tc = typescriptAnalyzer.testCoverage("", "src/foo.test.ts", new Set());
+    expect(tc.has_test).toBe(true);
+  });
+
+  test("rust: inline #[cfg(test)] module counts as coverage", () => {
+    const fileSet = new Set(["rust/tested/src/lib.rs"]);
+    const tc = rustAnalyzer.testCoverage(
+      read("rust/tested/src/lib.rs"), "rust/tested/src/lib.rs", fileSet,
+    );
+    expect(tc).toEqual({ has_test: true, test_path: "(inline)" });
+  });
+
+  test("rust: no inline test module found", () => {
+    const tc = rustAnalyzer.testCoverage(
+      read("rust/complex/src/lib.rs"), "rust/complex/src/lib.rs", new Set(),
+    );
+    expect(tc).toEqual({ has_test: false, test_path: "" });
+  });
+});
+
 describe("rust dependency extraction", () => {
   const files = new Set([
     "rust/coupled/src/main.rs",

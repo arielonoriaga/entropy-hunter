@@ -1,0 +1,5 @@
+# fixtures/ contains .test.ts files that are *data* for entropy-hunter's own
+# test-coverage-detection signal, not real assertions — without this, bun's
+# default recursive *.test.ts glob picks them up as a real test file.
+[test]
+root = "tests"

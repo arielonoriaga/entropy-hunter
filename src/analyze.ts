@@ -6,7 +6,9 @@ import { countNonBlankLines } from "./languages/strip";
 import { churn, currentCommit, headCommit, listTrackedFiles, repoName, sinceToDate } from "./git";
 import { detectDuplication, fingerprint, type FileFingerprint } from "./duplication";
 import type { Storage } from "./storage";
-import type { ComplexityResult, DependencyResult } from "./languages/analyzer";
+import {
+  isTestFile, type ComplexityResult, type DependencyResult, type TestCoverage,
+} from "./languages/analyzer";
 
 const SKIP_DIRS = new Set([
   ".git", ".entropy", "node_modules", "target", "target-musl", "dist",
@@ -72,8 +74,9 @@ function explainHotspot(
     { name: "churn", score: scores.churn_score, fact: `${f.commits} commits (${f.weighted_commits} weighted, ${f.churn_trend})` },
   ];
   const top = dims.reduce((a, b) => (b.score > a.score ? b : a));
-  if (top.score === 0) return "no dominant signal — all three dimensions are low";
-  return `driven by ${top.name} (${top.fact})`;
+  const untested = !f.has_test && !f.is_entrypoint && f.complexity_total > 0 ? " — untested" : "";
+  if (top.score === 0) return `no dominant signal — all three dimensions are low${untested}`;
+  return `driven by ${top.name} (${top.fact})${untested}`;
 }
 
 interface CachedBase {
@@ -91,7 +94,7 @@ interface CachedBase {
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v7"; // v7: guard-clump (shared-condition) signal
+const CACHE_VERSION = "v8"; // v8: test-coverage-presence signal (deps_json now bundles {deps, tc})
 
 export type ProgressFn = (message: string) => void;
 
@@ -153,6 +156,7 @@ export function analyzeRepo(
 
     let base: CachedBase;
     let deps: DependencyResult;
+    let tc: TestCoverage;
     if (contentFresh) {
       base = JSON.parse(row!.base_json);
     } else {
@@ -184,15 +188,18 @@ export function analyzeRepo(
         })(),
       };
     }
+    // deps AND testCoverage both depend on the fileset (companion-file /
+    // internal-import resolution), unlike `base` — bundled in one cache slot.
     if (contentFresh && row!.fileset_hash === filesetHash) {
-      deps = JSON.parse(row!.deps_json);
+      ({ deps, tc } = JSON.parse(row!.deps_json));
     } else {
       deps = analyzer.dependencies(src, path, fileSet);
+      tc = analyzer.testCoverage(src, path, fileSet);
     }
     if (storage && !(contentFresh && row!.fileset_hash === filesetHash)) {
       cacheWrites.push({
         path, content_hash: contentHash, fileset_hash: filesetHash,
-        base_json: JSON.stringify(base), deps_json: JSON.stringify(deps),
+        base_json: JSON.stringify(base), deps_json: JSON.stringify({ deps, tc }),
       });
     }
 
@@ -238,6 +245,8 @@ export function analyzeRepo(
       guard_clumps: base.gd.groups,
       max_guard_group: base.gd.max,
       guard_prefix: base.gd.prefix,
+      has_test: tc.has_test,
+      test_path: tc.test_path,
       is_entrypoint: isEntrypoint(path),
       is_orphan: false,
       transitive_dependents: 0,
@@ -261,12 +270,25 @@ export function analyzeRepo(
   for (const f of facts.values()) f.dependents.sort();
 
   progress?.("graph analysis (orphans, reach, architecture)…");
-  const reach = transitiveReach(new Map([...facts].map(([p, f]) => [p, f.dependents])));
+  const reach = transitiveReachSets(new Map([...facts].map(([p, f]) => [p, f.dependents])));
   const layers = config.architecture.layers.split(",").map((l) => l.trim()).filter(Boolean);
   const architecture_violations: import("./types").ArchViolation[] = [];
   for (const f of facts.values()) {
     f.is_orphan = f.fan_in === 0 && !f.is_entrypoint;
-    f.transitive_dependents = reach.get(f.path) ?? 0;
+    const reachSet = reach.get(f.path);
+    f.transitive_dependents = reachSet?.size ?? 0;
+    // A companion-file match already covers the common case; this catches
+    // files only exercised transitively (e.g. an internal helper imported
+    // by another module that a test file imports, not directly by the test).
+    if (!f.has_test && reachSet) {
+      for (const dep of reachSet) {
+        if (isTestFile(dep)) {
+          f.has_test = true;
+          f.test_path = dep;
+          break;
+        }
+      }
+    }
     const fromLayer = layerOf(f.path, layers);
     if (fromLayer === -1) continue;
     for (const dep of f.dependencies) {
@@ -302,7 +324,7 @@ export function analyzeRepo(
     ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
       ew.duplication_weight + ew.state_weight + ew.clumping_weight +
       ew.deadcode_weight + ew.architecture_weight + ew.reach_weight +
-      ew.magic_weight + ew.guard_weight || 1;
+      ew.magic_weight + ew.guard_weight + ew.test_weight || 1;
   const totalFiles = Math.max(facts.size - 1, 1);
   const hotspotWeightSum =
     hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
@@ -345,6 +367,13 @@ export function analyzeRepo(
     // Worst single group drives the score, like state/clumping: one guard
     // re-checked `guard_group_cap` times in siblings scores 100.
     const guard_score = round1(normalize(f.max_guard_group, s.guard_group_cap));
+    // 0 if tested; if not, scales with how much logic is exposed untested —
+    // a trivial file (complexity_total 0, e.g. pure types) naturally scores
+    // 0 too, since there's nothing there to protect. Entrypoints/tests are
+    // exempt (a CLI dispatcher or the test file itself doesn't need a test).
+    const test_score = f.has_test || f.is_entrypoint
+      ? 0
+      : round1(normalize(f.complexity_total, s.test_complexity_cap));
     const hotspot_score = round1(
       (complexity_score * hw.complexity_weight +
         coupling_score * hw.coupling_weight +
@@ -362,7 +391,8 @@ export function analyzeRepo(
         architecture_score * ew.architecture_weight +
         reach_score * ew.reach_weight +
         magic_score * ew.magic_weight +
-        guard_score * ew.guard_weight) / entropyWeightSum;
+        guard_score * ew.guard_weight +
+        test_score * ew.test_weight) / entropyWeightSum;
     return {
       ...f,
       complexity_score,
@@ -376,6 +406,7 @@ export function analyzeRepo(
       reach_score,
       magic_score,
       guard_score,
+      test_score,
       hotspot_score,
       why,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
@@ -399,12 +430,13 @@ export function analyzeRepo(
         reach: wmean((f) => f.reach_score),
         magic: wmean((f) => f.magic_score),
         guard: wmean((f) => f.guard_score),
+        test: wmean((f) => f.test_score),
         entropy: 0,
       }
     : {
         complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
         clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0,
-        guard: 0, entropy: 0,
+        guard: 0, test: 0, entropy: 0,
       };
   summary.entropy = round1(
     (summary.complexity * ew.complexity_weight +
@@ -417,7 +449,8 @@ export function analyzeRepo(
       summary.architecture * ew.architecture_weight +
       summary.reach * ew.reach_weight +
       summary.magic * ew.magic_weight +
-      summary.guard * ew.guard_weight) / entropyWeightSum,
+      summary.guard * ew.guard_weight +
+      summary.test * ew.test_weight) / entropyWeightSum,
   );
 
   const byLanguage: Record<string, number> = {};
@@ -428,7 +461,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 7,
+    version: 8,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,
@@ -449,14 +482,6 @@ const ENTRY_BASENAMES = new Set([
   "index.ts", "index.tsx", "index.js", "index.mjs",
   "main.ts", "main.tsx", "main.js", "app.ts", "app.tsx", "cli.ts",
 ]);
-export function isTestFile(path: string): boolean {
-  const base = path.split("/").pop()!;
-  return (
-    /\.(test|spec)\.[\w.]+$/.test(base) ||
-    /(_tests?|^tests?)\.rs$/.test(base) ||
-    /(^|\/)(tests|__tests__)\//.test(path)
-  );
-}
 
 export function isEntrypoint(path: string): boolean {
   const base = path.split("/").pop()!;
@@ -468,8 +493,11 @@ export function isEntrypoint(path: string): boolean {
 }
 
 // Transitive dependents per file: BFS over the inverted dependency graph.
-export function transitiveReach(dependents: Map<string, string[]>): Map<string, number> {
-  const reach = new Map<string, number>();
+// Returns the full reachable-dependent SET per file, not just its size —
+// callers that only need the count use `.size`; the reach signal does,
+// but "is any transitive dependent a test file?" needs actual membership.
+export function transitiveReachSets(dependents: Map<string, string[]>): Map<string, Set<string>> {
+  const reach = new Map<string, Set<string>>();
   for (const start of dependents.keys()) {
     const seen = new Set<string>([start]);
     const queue = [start];
@@ -481,7 +509,8 @@ export function transitiveReach(dependents: Map<string, string[]>): Map<string, 
         }
       }
     }
-    reach.set(start, seen.size - 1);
+    seen.delete(start);
+    reach.set(start, seen);
   }
   return reach;
 }

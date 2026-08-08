@@ -1,6 +1,6 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  complexityFromMarkers, countMagic, findSharedConditionGroups, normalizedLinesFrom,
+  complexityFromMarkers, countMagic, findSharedConditionGroups, isTestFile, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
@@ -97,5 +97,27 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     },
     // Field-shape analysis needs typed syntax knowledge — dedicated plugins only.
     stateSpace: () => [],
+
+    testCoverage(_source, from, fileSet) {
+      if (isTestFile(from)) return { has_test: true, test_path: "" };
+      const dir = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
+      const ext = from.split(".").pop()!;
+      const stem = from.slice(0, -(ext.length + 1));
+      const base = stem.split("/").pop()!;
+      let candidates: string[];
+      if (language === "go") {
+        candidates = [`${stem}_test.go`]; // the one true Go convention
+      } else if (language === "python") {
+        candidates = [
+          `${stem}_test.py`, `${dir}/test_${base}.py`,
+          `${dir}/tests/test_${base}.py`, `tests/test_${base}.py`,
+        ];
+      } else {
+        // Best-effort for the rest: same-directory sibling only.
+        candidates = [`${stem}_test.${ext}`, `${dir}/test_${base}.${ext}`, `${dir}/${base}Test.${ext}`];
+      }
+      const found = candidates.find((c) => fileSet.has(c)) ?? "";
+      return { has_test: !!found, test_path: found };
+    },
   };
 }

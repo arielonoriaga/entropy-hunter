@@ -60,10 +60,31 @@ describe("analyzeRepo on fixtures", () => {
   const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
   test("finds dedicated and generic-fallback languages", () => {
-    expect(result.files_by_language.rust).toBe(9);
-    expect(result.files_by_language.typescript).toBe(11);
+    expect(result.files_by_language.rust).toBe(10);
+    expect(result.files_by_language.typescript).toBe(13);
     expect(result.files_by_language.python).toBe(2); // generic fallback
-    expect(result.files_analyzed).toBe(22);
+    expect(result.files_analyzed).toBe(25);
+  });
+
+  test("test signal: tested files score 0, untested-with-complexity files don't", () => {
+    const tested = result.files.find((f) => f.path === "typescript/tested/math.ts")!;
+    expect(tested.has_test).toBe(true);
+    expect(tested.test_path).toBe("typescript/tested/math.test.ts");
+    expect(tested.test_score).toBe(0);
+    const testedRust = result.files.find((f) => f.path === "rust/tested/src/lib.rs")!;
+    expect(testedRust.has_test).toBe(true);
+    expect(testedRust.test_path).toBe("(inline)");
+    expect(testedRust.test_score).toBe(0);
+    // complex/logic.ts has real complexity and no companion test anywhere in fixtures/
+    const untested = result.files.find((f) => f.path === "typescript/complex/logic.ts")!;
+    expect(untested.has_test).toBe(false);
+    expect(untested.test_score).toBeGreaterThan(0);
+    // a file with no functions (types/interfaces only) is exempt even
+    // without a test — there's no logic there to leave unprotected
+    const trivial = result.files.find((f) => f.path === "typescript/stateful/model.ts")!;
+    expect(trivial.complexity_total).toBe(0);
+    expect(trivial.has_test).toBe(false);
+    expect(trivial.test_score).toBe(0);
   });
 
   test("guard signal: sibling ifs sharing a guard are detected and scored", () => {
@@ -175,7 +196,7 @@ describe("analyzeRepo on fixtures", () => {
     const w = DEFAULT_CONFIG.entropy;
     const keys = [
       "complexity", "coupling", "churn", "duplication", "state",
-      "clumping", "deadcode", "architecture", "reach", "magic", "guard",
+      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test",
     ] as const;
     const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     const expected =
@@ -204,14 +225,14 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 7)", () => {
-    expect(result.version).toBe(7);
+  test("JSON schema shape (version 8)", () => {
+    expect(result.version).toBe(8);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
     for (const k of [
       "entropy", "complexity", "coupling", "churn", "duplication",
-      "state", "clumping", "deadcode", "architecture", "reach", "magic", "guard",
+      "state", "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test",
     ]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
     }
@@ -232,7 +253,7 @@ describe("analyzeRepo on fixtures", () => {
       "max_state_fields", "data_clumps", "max_clump_fields",
       "transitive_dependents", "arch_violations",
       "magic_numbers", "magic_strings", "magic_score",
-      "guard_clumps", "max_guard_group", "guard_score",
+      "guard_clumps", "max_guard_group", "guard_score", "test_score",
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }
