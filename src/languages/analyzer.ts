@@ -144,6 +144,12 @@ export function complexityFromMarkers(
   decisionToken: RegExp,
 ): ComplexityResult {
   const functions: FunctionComplexity[] = [];
+  // Parallel to `functions`: does this header's own line open a block body
+  // (ends with `{`)? A single-expression arrow (`const f = x => x + 1`) has
+  // none — it must not "capture" attribution for the lines that follow it,
+  // or a trivial one-line helper declared mid-function silently steals every
+  // decision point in the code that comes after it until the next header.
+  const hasBody: boolean[] = [];
   const lines = stripped.split("\n");
   for (let ln = 0; ln < lines.length; ln++) {
     functionHeader.lastIndex = 0;
@@ -152,15 +158,30 @@ export function complexityFromMarkers(
       // Multi-alternative regexes put the name in whichever group matched.
       const name = m.slice(1).find((g) => g !== undefined) ?? "<anonymous>";
       functions.push({ name, complexity: 1, line: ln + 1 });
+      // A `function` declaration/expression or a same-line method header is
+      // always block-bodied by JS/TS grammar even when its own signature
+      // spans multiple lines (checking only THIS line for a trailing `{`
+      // would wrongly call it bodyless). Only a bare arrow assignment
+      // (header text ending in `=>`) can have an expression body instead —
+      // for those, body-ness is whatever immediately follows on this line.
+      const isArrow = /=>\s*$/.test(m[0]);
+      const restOfLine = lines[ln].slice(m.index! + m[0].length);
+      hasBody.push(!isArrow || /^\s*\{/.test(restOfLine));
     }
   }
-  let fi = -1;
+  let fi = -1; // most recent header passed, whether or not it owns a body
+  let active = -1; // the block-bodied function currently attributing lines
   let unattributed = 0;
   for (let ln = 0; ln < lines.length; ln++) {
-    while (fi + 1 < functions.length && functions[fi + 1].line === ln + 1) fi++;
+    while (fi + 1 < functions.length && functions[fi + 1].line === ln + 1) {
+      fi++;
+      if (hasBody[fi]) active = fi;
+    }
+    const onHeaderLine = fi >= 0 && functions[fi].line === ln + 1;
+    const target = onHeaderLine && !hasBody[fi] ? fi : active;
     const count = lines[ln].match(decisionToken)?.length ?? 0;
-    if (fi < 0) unattributed += count;
-    else functions[fi].complexity += count;
+    if (target < 0) unattributed += count;
+    else functions[target].complexity += count;
   }
   // Decision points outside any function (top-level module code).
   if (unattributed > 0) {

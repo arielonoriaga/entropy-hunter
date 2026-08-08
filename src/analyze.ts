@@ -90,7 +90,7 @@ interface CachedBase {
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v6"; // v6: multi-line function signatures no longer misdetected as bodyless
 
 export type ProgressFn = (message: string) => void;
 

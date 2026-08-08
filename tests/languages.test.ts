@@ -53,6 +53,44 @@ describe("typescript complexity", () => {
     // scan: for + if + while + ?? = 5
     expect(byName.scan).toBe(5);
   });
+
+  test("a single-expression arrow helper does not steal complexity from the code after it", () => {
+    // Regression: `config` used to "capture" every decision token in the
+    // switch that follows it, because it has no `{` body of its own.
+    const src = `function outer(cmd: string) {
+  const config = () => loadConfig();
+  switch (cmd) {
+    case "a": return 1;
+    case "b": return 2;
+    case "c": return 3;
+  }
+  if (cmd) return 0;
+}`;
+    const cx = typescriptAnalyzer.complexity(src);
+    const byName = Object.fromEntries(cx.functions.map((f) => [f.name, f.complexity]));
+    expect(byName.config).toBe(1); // no decision tokens of its own
+    expect(byName.outer).toBe(5); // 3 case + 1 if, attributed to the real enclosing function
+  });
+
+  test("a multi-line function signature is still recognized as block-bodied", () => {
+    // Regression: checking only the header's OWN line for a trailing `{`
+    // wrongly called this bodyless (signature spans 3 lines), which then
+    // dumped every decision token after it into <module> instead of `outer`.
+    const src = `export function outer(
+  a: number,
+  b: number,
+): number {
+  const helper = (x: number) => x * 2;
+  if (a > b) return helper(a);
+  if (a < b) return helper(b);
+  return 0;
+}`;
+    const cx = typescriptAnalyzer.complexity(src);
+    const byName = Object.fromEntries(cx.functions.map((f) => [f.name, f.complexity]));
+    expect(byName.helper).toBe(1);
+    expect(byName.outer).toBe(3); // 2 ifs, correctly attributed, not <module>
+    expect(byName["<module>"]).toBeUndefined();
+  });
 });
 
 describe("state-space and clump extraction", () => {
