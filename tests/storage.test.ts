@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { analyzeRepo } from "../src/analyze";
@@ -60,5 +60,85 @@ describe("snapshot persistence", () => {
     const reopened = new Storage(db);
     expect(reopened.history().length).toBe(2);
     reopened.close();
+  });
+});
+
+describe("incremental cache", () => {
+  test("warm cached run equals cold uncached run", () => {
+    const storage = new Storage(join(dir, "cache.db"));
+    const uncached = analyzeRepo(FIXTURES, DEFAULT_CONFIG);
+    const cold = analyzeRepo(FIXTURES, DEFAULT_CONFIG, { storage }); // populates cache
+    const warm = analyzeRepo(FIXTURES, DEFAULT_CONFIG, { storage }); // reads cache
+    const strip = (r: ReturnType<typeof analyzeRepo>) => ({ ...r, timestamp: null });
+    expect(strip(cold)).toEqual(strip(uncached));
+    expect(strip(warm)).toEqual(strip(uncached));
+    // cache actually populated, one row per analyzed file
+    const n = storage.db.query("SELECT COUNT(*) AS n FROM file_cache").get() as { n: number };
+    expect(n.n).toBe(uncached.files_analyzed);
+    storage.close();
+  });
+
+  test("editing a file's content invalidates its cache entry", () => {
+    const repo = mkdtempSync(join(tmpdir(), "entropy-repo-"));
+    cpSync(FIXTURES, repo, { recursive: true });
+    const target = join(repo, "typescript", "simple", "util.ts");
+
+    const storage = new Storage(join(dir, "cache-invalidate.db"));
+    const before = analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    const beforeRow = storage.getFileCache("typescript/simple/util.ts")!;
+
+    writeFileSync(
+      target,
+      "export function extra(a: number, b: number): number {\n" +
+        "  if (a > b) { return a; } else if (a < b) { return b; } else { return 0; }\n" +
+        "}\n",
+      { flag: "a" },
+    );
+
+    const after = analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    const afterRow = storage.getFileCache("typescript/simple/util.ts")!;
+    const directUncached = analyzeRepo(repo, DEFAULT_CONFIG);
+
+    expect(afterRow.content_hash).not.toBe(beforeRow.content_hash);
+    const beforeFile = before.files.find((f) => f.path === "typescript/simple/util.ts")!;
+    const afterFile = after.files.find((f) => f.path === "typescript/simple/util.ts")!;
+    const directFile = directUncached.files.find((f) => f.path === "typescript/simple/util.ts")!;
+    expect(afterFile.loc).toBeGreaterThan(beforeFile.loc);
+    expect(afterFile.complexity_total).toBeGreaterThan(beforeFile.complexity_total);
+    expect(afterFile.loc).toBe(directFile.loc);
+    expect(afterFile.complexity_total).toBe(directFile.complexity_total);
+
+    storage.close();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("adding a file that changes the fileset invalidates dependency cache without touching unrelated content hashes", () => {
+    const repo = mkdtempSync(join(tmpdir(), "entropy-repo-"));
+    cpSync(FIXTURES, repo, { recursive: true });
+
+    const storage = new Storage(join(dir, "cache-fileset.db"));
+    analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    const sharedBefore = storage.getFileCache("typescript/coupled/shared.ts")!;
+
+    // New file that imports shared.ts, changing shared.ts's fan_in once resolved.
+    writeFileSync(
+      join(repo, "typescript", "coupled", "extra.ts"),
+      'import { log } from "./shared";\nexport function useLog(): void { log("x"); }\n',
+    );
+
+    const after = analyzeRepo(repo, DEFAULT_CONFIG, { storage });
+    const sharedAfter = storage.getFileCache("typescript/coupled/shared.ts")!;
+    const directUncached = analyzeRepo(repo, DEFAULT_CONFIG);
+
+    // content unchanged → same content_hash, but fileset_hash must have moved
+    expect(sharedAfter.content_hash).toBe(sharedBefore.content_hash);
+    expect(sharedAfter.fileset_hash).not.toBe(sharedBefore.fileset_hash);
+
+    const sharedFile = after.files.find((f) => f.path === "typescript/coupled/shared.ts")!;
+    const directShared = directUncached.files.find((f) => f.path === "typescript/coupled/shared.ts")!;
+    expect(sharedFile.fan_in).toBe(directShared.fan_in);
+
+    storage.close();
+    rmSync(repo, { recursive: true, force: true });
   });
 });

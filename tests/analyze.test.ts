@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { analyzeRepo, findCycles, normalize } from "../src/analyze";
-import { detectDuplication, WINDOW } from "../src/duplication";
+import { detectDuplication, fingerprint, WINDOW } from "../src/duplication";
 import { DEFAULT_CONFIG } from "../src/types";
 
 const FIXTURES = join(import.meta.dir, "..", "fixtures");
@@ -20,9 +20,9 @@ describe("duplication", () => {
   test("identical blocks across files are detected", () => {
     const block = Array.from({ length: WINDOW }, (_, i) => `statement number ${i};`);
     const files = new Map([
-      ["a.ts", [...block, "unique to a;"]],
-      ["b.ts", ["unique to b;", ...block]],
-      ["c.ts", ["nothing shared here;", "at all really;"]],
+      ["a.ts", fingerprint([...block, "unique to a;"])],
+      ["b.ts", fingerprint(["unique to b;", ...block])],
+      ["c.ts", fingerprint(["nothing shared here;", "at all really;"])],
     ]);
     const result = detectDuplication(files);
     expect(result.get("a.ts")!.duplicated_lines).toBe(WINDOW);
@@ -33,7 +33,7 @@ describe("duplication", () => {
   });
 
   test("no false positives below window size", () => {
-    const short = ["one shared line;"];
+    const short = fingerprint(["one shared line;"]);
     const result = detectDuplication(new Map([["a.ts", short], ["b.ts", short]]));
     expect(result.get("a.ts")!.duplicated_lines).toBe(0);
   });

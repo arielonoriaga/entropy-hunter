@@ -22,6 +22,10 @@ export function isGitRepo(repo: string): boolean {
   return git(repo, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
 }
 
+export function headCommit(repo: string): string {
+  return git(repo, ["rev-parse", "HEAD"]).trim() || "unknown";
+}
+
 export function currentCommit(repo: string): string {
   return git(repo, ["rev-parse", "--short", "HEAD"]).trim() || "unknown";
 }

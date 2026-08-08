@@ -10,18 +10,28 @@ Runs entirely locally (Bun + SQLite, zero runtime dependencies).
 > configurable normalization. Interpretation is left to humans — or a future
 > AI agent consuming the JSON output.
 
+## Install
+
+```bash
+cd entropy-hunter && bun install && bun link   # puts `entropy` on PATH (~/.bun/bin)
+```
+
 ## Usage
 
 ```bash
 cd my-project
-bun /path/to/entropy-hunter/src/cli.ts init      # creates .entropy/{config.toml,entropy.db}
-... analyze                                       # working-tree analysis
-... snapshot                                      # persist snapshot for current commit
-... hotspots --limit 20 [--language rust]
-... history [--limit 20] [--since 90d]
-... file src/orders/service.rs
-... report --format json|markdown|text
+entropy init                                   # creates .entropy/{config.toml,entropy.db}
+entropy analyze                                # working-tree analysis
+entropy snapshot                               # persist snapshot for current commit
+entropy hotspots --limit 20 [--language rust]
+entropy history [--limit 20] [--since 90d]
+entropy file src/orders/service.rs
+entropy report --format json|markdown|text
 ```
+
+Analysis is incremental: initialized repos cache per-file results (keyed by
+content hash) and churn (keyed by HEAD + window) in `entropy.db`, so repeat
+runs only re-process what changed (~0.2s warm vs ~3s cold on a 1.7k-file repo).
 
 All commands accept `--repo <path>` to analyze a repository other than the cwd,
 and `--since 30d|12w|6m` to override the churn window.

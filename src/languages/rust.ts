@@ -9,6 +9,14 @@ const DECISION = /\b(?:if|while|loop|for)\b|&&|\|\||=>/g;
 
 const STD_CRATES = new Set(["std", "core", "alloc"]);
 
+// The engine calls complexity/dependencies/normalizedLines back-to-back on
+// the same source — strip once, reuse (1-entry memo).
+let memo: { src: string; out: string } | null = null;
+function stripped(src: string): string {
+  if (memo?.src !== src) memo = { src, out: stripCommentsAndStrings(src, { singleQuotes: false }) };
+  return memo.out;
+}
+
 function tryPaths(fileSet: Set<string>, candidates: string[]): string | null {
   for (const c of candidates) if (fileSet.has(c)) return c;
   return null;
@@ -33,15 +41,11 @@ export const rustAnalyzer: LanguageAnalyzer = {
   },
 
   complexity(source) {
-    return complexityFromMarkers(
-      stripCommentsAndStrings(source, { singleQuotes: false }),
-      FN_HEADER,
-      DECISION,
-    );
+    return complexityFromMarkers(stripped(source), FN_HEADER, DECISION);
   },
 
   dependencies(source, path, fileSet): DependencyResult {
-    const stripped = stripCommentsAndStrings(source, { singleQuotes: false });
+    const src = stripped(source);
     const internal = new Set<string>();
     const external = new Set<string>();
 
@@ -52,7 +56,7 @@ export const rustAnalyzer: LanguageAnalyzer = {
     const stem = path.replace(/\.rs$/, "");
 
     // mod x; → sibling module file
-    for (const m of stripped.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
+    for (const m of src.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
       const name = m[1];
       const hit = tryPaths(fileSet, [
         `${dir ? dir + "/" : ""}${name}.rs`,
@@ -64,7 +68,7 @@ export const rustAnalyzer: LanguageAnalyzer = {
     }
 
     // use paths (handles `use a::b::{c, d}` at the group level only)
-    for (const m of stripped.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([A-Za-z_:][A-Za-z0-9_:]*)/gm)) {
+    for (const m of src.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([A-Za-z_:][A-Za-z0-9_:]*)/gm)) {
       const segs = m[1].split("::").filter(Boolean);
       if (segs.length === 0) continue;
       const head = segs[0];
@@ -96,6 +100,6 @@ export const rustAnalyzer: LanguageAnalyzer = {
   },
 
   normalizedLines(source) {
-    return normalizedLinesFrom(stripCommentsAndStrings(source, { singleQuotes: false }));
+    return normalizedLinesFrom(stripped(source));
   },
 };

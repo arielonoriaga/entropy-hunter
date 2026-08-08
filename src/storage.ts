@@ -51,7 +51,56 @@ export class Storage {
       );
       CREATE INDEX IF NOT EXISTS idx_fm_snapshot ON file_metrics(snapshot_id);
       CREATE INDEX IF NOT EXISTS idx_fm_path ON file_metrics(path);
+      CREATE TABLE IF NOT EXISTS file_cache (
+        path TEXT PRIMARY KEY,
+        content_hash TEXT NOT NULL,
+        fileset_hash TEXT NOT NULL,
+        base_json TEXT NOT NULL,
+        deps_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+  }
+
+  // --- incremental analysis cache -----------------------------------------
+  // base_json (complexity, loc, duplication fingerprint) depends only on file
+  // content; deps_json also depends on the repo file list, since relative
+  // imports resolve against it — hence the separate fileset_hash guard.
+
+  getFileCache(path: string) {
+    return this.db
+      .query("SELECT content_hash, fileset_hash, base_json, deps_json FROM file_cache WHERE path = ?")
+      .get(path) as
+      | { content_hash: string; fileset_hash: string; base_json: string; deps_json: string }
+      | null;
+  }
+
+  putFileCaches(
+    rows: { path: string; content_hash: string; fileset_hash: string; base_json: string; deps_json: string }[],
+  ) {
+    const stmt = this.db.query(
+      `INSERT INTO file_cache (path, content_hash, fileset_hash, base_json, deps_json)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(path) DO UPDATE SET content_hash = excluded.content_hash,
+         fileset_hash = excluded.fileset_hash, base_json = excluded.base_json,
+         deps_json = excluded.deps_json`,
+    );
+    this.db.transaction(() => {
+      for (const r of rows) stmt.run(r.path, r.content_hash, r.fileset_hash, r.base_json, r.deps_json);
+    })();
+  }
+
+  kvGet(key: string): string | null {
+    const row = this.db.query("SELECT value FROM kv_cache WHERE key = ?").get(key) as
+      | { value: string }
+      | null;
+    return row?.value ?? null;
+  }
+
+  kvSet(key: string, value: string) {
+    this.db
+      .query("INSERT INTO kv_cache (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(key, value);
   }
 
   hasSnapshotFor(commit: string): boolean {

@@ -17,6 +17,14 @@ const FN_HEADER = new RegExp(
 );
 const DECISION = /\b(?:if|for|while|case|catch)\b|&&|\|\||\?\?/g;
 
+// The engine calls complexity/normalizedLines back-to-back on the same
+// source — strip once, reuse (1-entry memo).
+let memo: { src: string; out: string } | null = null;
+function stripped(src: string): string {
+  if (memo?.src !== src) memo = { src, out: stripCommentsAndStrings(src) };
+  return memo.out;
+}
+
 function complexityHeaders(stripped: string) {
   // complexityFromMarkers matches per line; the class-method alternative is
   // anchored, which works line-by-line with the m flag.
@@ -55,7 +63,7 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
   },
 
   complexity(source) {
-    return complexityHeaders(stripCommentsAndStrings(source));
+    return complexityHeaders(stripped(source));
   },
 
   dependencies(source, path, fileSet): DependencyResult {
@@ -86,6 +94,6 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
   },
 
   normalizedLines(source) {
-    return normalizedLinesFrom(stripCommentsAndStrings(source));
+    return normalizedLinesFrom(stripped(source));
   },
 };

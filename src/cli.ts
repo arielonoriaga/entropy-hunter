@@ -66,21 +66,20 @@ function parseArgs(argv: string[]): Args {
 
 function analyzeWithTrend(args: Args): AnalysisResult {
   const config = loadConfig(args.repo);
-  const result = analyzeRepo(args.repo, config, { since: args.since });
-  if (existsSync(dbPath(args.repo))) {
-    const storage = new Storage(dbPath(args.repo));
-    const prev = storage.latest();
-    if (prev) {
-      const delta = Math.round((result.summary.entropy - prev.entropy) * 10) / 10;
-      const days =
-        (new Date(result.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 86400_000;
-      result.trend = {
-        delta,
-        velocity: days > 0 ? Math.round((delta / days) * 100) / 100 : null,
-      };
-    }
-    storage.close();
+  // Initialized repos get the incremental cache; otherwise run stateless.
+  const storage = existsSync(dbPath(args.repo)) ? new Storage(dbPath(args.repo)) : undefined;
+  const result = analyzeRepo(args.repo, config, { since: args.since, storage });
+  const prev = storage?.latest();
+  if (prev) {
+    const delta = Math.round((result.summary.entropy - prev.entropy) * 10) / 10;
+    const days =
+      (new Date(result.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 86400_000;
+    result.trend = {
+      delta,
+      velocity: days > 0 ? Math.round((delta / days) * 100) / 100 : null,
+    };
   }
+  storage?.close();
   return result;
 }
 

@@ -3,8 +3,10 @@ import { join, relative } from "node:path";
 import type { AnalysisResult, EntropyConfig, FileFacts, FileMetrics, Summary } from "./types";
 import { analyzerFor } from "./languages";
 import { countNonBlankLines } from "./languages/strip";
-import { churn, currentCommit, listTrackedFiles, repoName } from "./git";
-import { detectDuplication } from "./duplication";
+import { churn, currentCommit, headCommit, listTrackedFiles, repoName, sinceToDate } from "./git";
+import { detectDuplication, fingerprint, type FileFingerprint } from "./duplication";
+import type { Storage } from "./storage";
+import type { ComplexityResult, DependencyResult } from "./languages/analyzer";
 
 const SKIP_DIRS = new Set([
   ".git", ".entropy", "node_modules", "target", "target-musl", "dist",
@@ -41,15 +43,34 @@ export function normalize(value: number, cap: number): number {
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
+interface CachedBase {
+  language: string;
+  loc: number;
+  cx: ComplexityResult;
+  fp: FileFingerprint;
+}
+
 export function analyzeRepo(
   repo: string,
   config: EntropyConfig,
-  opts: { since?: string } = {},
+  opts: { since?: string; storage?: Storage } = {},
 ): AnalysisResult {
   const since = opts.since ?? config.analysis.since;
+  const storage = opts.storage;
   const paths = listAnalyzableFiles(repo);
   const fileSet = new Set(paths);
-  const churnMap = churn(repo, since);
+  const filesetHash = String(Bun.hash(paths.join("\n")));
+
+  // Churn depends only on committed history + window → cache per (HEAD, date).
+  let churnMap: ReturnType<typeof churn>;
+  const churnKey = `churn:${headCommit(repo)}:${sinceToDate(since)}`;
+  const cachedChurn = storage?.kvGet(churnKey);
+  if (cachedChurn) {
+    churnMap = new Map(JSON.parse(cachedChurn));
+  } else {
+    churnMap = churn(repo, since);
+    storage?.kvSet(churnKey, JSON.stringify([...churnMap]));
+  }
 
   const sources = new Map<string, string>();
   for (const p of paths) {
@@ -60,25 +81,53 @@ export function analyzeRepo(
     }
   }
 
-  // Pass 1: complexity, deps, normalized lines
+  // Pass 1: complexity, deps, duplication fingerprints — cached per file.
   const facts = new Map<string, FileFacts>();
   const depGraph = new Map<string, string[]>(); // path -> internal deps
-  const dupInput = new Map<string, string[]>();
-  const lineNumbers = new Map<string, number[]>();
+  const dupInput = new Map<string, FileFingerprint>();
+  const cacheWrites: {
+    path: string; content_hash: string; fileset_hash: string;
+    base_json: string; deps_json: string;
+  }[] = [];
 
   for (const [path, src] of sources) {
     const analyzer = analyzerFor(path)!;
-    const cx = analyzer.complexity(src);
-    const deps = analyzer.dependencies(src, path, fileSet);
-    const norm = analyzer.normalizedLines(src);
-    dupInput.set(path, norm.map((l) => l.text));
-    lineNumbers.set(path, norm.map((l) => l.line));
+    const contentHash = String(Bun.hash(src));
+    const row = storage?.getFileCache(path);
+    const contentFresh = row?.content_hash === contentHash;
+
+    let base: CachedBase;
+    let deps: DependencyResult;
+    if (contentFresh) {
+      base = JSON.parse(row!.base_json);
+    } else {
+      base = {
+        language: analyzer.language,
+        loc: countNonBlankLines(src),
+        cx: analyzer.complexity(src),
+        fp: fingerprint(analyzer.normalizedLines(src).map((l) => l.text)),
+      };
+    }
+    if (contentFresh && row!.fileset_hash === filesetHash) {
+      deps = JSON.parse(row!.deps_json);
+    } else {
+      deps = analyzer.dependencies(src, path, fileSet);
+    }
+    if (storage && !(contentFresh && row!.fileset_hash === filesetHash)) {
+      cacheWrites.push({
+        path, content_hash: contentHash, fileset_hash: filesetHash,
+        base_json: JSON.stringify(base), deps_json: JSON.stringify(deps),
+      });
+    }
+
+    const cx = base.cx;
+    dupInput.set(path, base.fp);
     depGraph.set(path, deps.internal);
     const ch = churnMap.get(path) ?? { commits: 0, lines_added: 0, lines_deleted: 0 };
     facts.set(path, {
       path,
-      language: analyzer.language,
-      loc: countNonBlankLines(src),
+      language: base.language,
+      loc: base.loc,
       complexity_total: cx.total,
       complexity_average: round1(cx.average),
       complexity_max: cx.max,
@@ -96,6 +145,8 @@ export function analyzeRepo(
       duplication_percentage: 0,
     });
   }
+
+  if (storage && cacheWrites.length) storage.putFileCaches(cacheWrites);
 
   // Pass 2: fan-in from inverted graph
   for (const [from, deps] of depGraph) {
