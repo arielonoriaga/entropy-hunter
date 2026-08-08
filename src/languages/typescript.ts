@@ -1,6 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  complexityFromMarkers, extractBraceBlocks, fieldNames, largestPrefixClump, normalizedLinesFrom,
+  complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
+  largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
@@ -97,6 +98,14 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
 
   normalizedLines(source) {
     return normalizedLinesFrom(stripped(source));
+  },
+
+  magic(source) {
+    return countMagic(
+      stripped(source),
+      stripCommentsAndStrings(source, { keepStrings: true }),
+      /^\s*(?:export\s+)?const\b/,
+    );
   },
 
   stateSpace(source) {

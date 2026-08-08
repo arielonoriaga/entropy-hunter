@@ -1,5 +1,5 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
-import { complexityFromMarkers, normalizedLinesFrom } from "./analyzer";
+import { complexityFromMarkers, countMagic, normalizedLinesFrom } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
 // Language-agnostic fallback: churn, duplication, LOC and normalization are
@@ -73,6 +73,16 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     },
     normalizedLines(source) {
       return normalizedLinesFrom(strip(source, path));
+    },
+    magic(source) {
+      return countMagic(
+        strip(source, path),
+        stripCommentsAndStrings(source, {
+          hashComments: HASH_COMMENT_LANGS.has(language),
+          keepStrings: true,
+        }),
+        /^\s*(?:const|final|static|readonly)\b|^[A-Z_][A-Z0-9_]*\s*=/,
+      );
     },
     // Field-shape analysis needs typed syntax knowledge — dedicated plugins only.
     stateSpace: () => [],

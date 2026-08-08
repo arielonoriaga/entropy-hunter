@@ -60,10 +60,19 @@ describe("analyzeRepo on fixtures", () => {
   const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
   test("finds dedicated and generic-fallback languages", () => {
-    expect(result.files_by_language.rust).toBe(7);
-    expect(result.files_by_language.typescript).toBe(9);
+    expect(result.files_by_language.rust).toBe(8);
+    expect(result.files_by_language.typescript).toBe(10);
     expect(result.files_by_language.python).toBe(2); // generic fallback
-    expect(result.files_analyzed).toBe(18);
+    expect(result.files_analyzed).toBe(20);
+  });
+
+  test("magic signal: literal-dense files score, named-constant files don't", () => {
+    const magic = result.files.find((f) => f.path === "typescript/magic/pricing.ts")!;
+    expect(magic.magic_numbers).toBe(6);
+    expect(magic.magic_strings).toBe(2);
+    expect(magic.magic_score).toBe(100); // 8 literals / 14 LOC — way past 5-per-100 cap
+    const clean = result.files.find((f) => f.path === "typescript/simple/util.ts")!;
+    expect(clean.magic_score).toBe(0);
   });
 
   test("generic analyzer: python complexity and imports resolve", () => {
@@ -153,7 +162,7 @@ describe("analyzeRepo on fixtures", () => {
     const w = DEFAULT_CONFIG.entropy;
     const keys = [
       "complexity", "coupling", "churn", "duplication", "state",
-      "clumping", "deadcode", "architecture", "reach",
+      "clumping", "deadcode", "architecture", "reach", "magic",
     ] as const;
     const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     const expected =
@@ -182,14 +191,14 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 4)", () => {
-    expect(result.version).toBe(4);
+  test("JSON schema shape (version 5)", () => {
+    expect(result.version).toBe(5);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
     for (const k of [
       "entropy", "complexity", "coupling", "churn", "duplication",
-      "state", "clumping", "deadcode", "architecture", "reach",
+      "state", "clumping", "deadcode", "architecture", "reach", "magic",
     ]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
     }
@@ -209,6 +218,7 @@ describe("analyzeRepo on fixtures", () => {
       "entropy_contribution", "type_count", "optional_fields", "boolean_fields",
       "max_state_fields", "data_clumps", "max_clump_fields",
       "transitive_dependents", "arch_violations",
+      "magic_numbers", "magic_strings", "magic_score",
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }

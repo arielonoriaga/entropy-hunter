@@ -87,6 +87,30 @@ describe("state-space and clump extraction", () => {
   });
 });
 
+describe("magic literals", () => {
+  test("ts: logic numbers and compared/case strings counted; const declarations exempt", () => {
+    const magic = typescriptAnalyzer.magic(read("typescript/magic/pricing.ts"));
+    // 0.85, 99.99, 12, 89.99, 79.99, 99.99 — TAX_RATE line exempt
+    expect(magic.numbers).toBe(6);
+    expect(magic.strings).toBe(2); // === "premium", case "vip"
+  });
+
+  test("rust: match-arm strings and logic numbers counted; const exempt", () => {
+    const magic = rustAnalyzer.magic(read("rust/magic/src/lib.rs"));
+    // 7, 250, 9, 11, 400 — FREE_SHIPPING_THRESHOLD line exempt
+    expect(magic.numbers).toBe(5);
+    expect(magic.strings).toBe(2); // == "north", "south" =>
+  });
+
+  test("0/1/2, numbers inside strings and comments never count", () => {
+    const magic = typescriptAnalyzer.magic(
+      'const x = arr[0] + 1; // 42 in a comment\nconst y = "version 3.14";\nlet z = 2;',
+    );
+    expect(magic.numbers).toBe(0);
+    expect(magic.strings).toBe(0);
+  });
+});
+
 describe("rust dependency extraction", () => {
   const files = new Set([
     "rust/coupled/src/main.rs",

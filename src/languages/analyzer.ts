@@ -58,6 +58,33 @@ export function fieldNames(body: string): string[] {
   return [...body.matchAll(/([A-Za-z_$][\w$]*)\s*\??:/g)].map((m) => m[1]);
 }
 
+// Magic literals in logic positions. Numbers: bare numeric literals outside
+// named-constant declarations, excluding conventional 0/1/2. Strings:
+// literals used in comparisons or case/match arms — stringly-typed logic
+// that wants to be an enum. Named constants are the fix, so they don't count.
+const ALLOWED_NUMBERS = new Set(["0", "1", "2"]);
+const NUMBER = /(?<![\w.])\d+(?:\.\d+)?(?![\w.])/g;
+const STRING_COMPARE = /[=!]={1,2}\s*(['"])(?:\\.|(?!\1).)+\1/g;
+const STRING_ARM = /\bcase\s+(['"])|(['"])(?:\\.|(?!\2).)+\2\s*=>/g;
+
+export function countMagic(
+  numbersView: string, // comments AND string contents blanked
+  stringsView: string, // comments blanked, string contents kept
+  constDeclLine: RegExp, // lines declaring named constants — exempt
+): { numbers: number; strings: number } {
+  let numbers = 0;
+  for (const line of numbersView.split("\n")) {
+    if (constDeclLine.test(line)) continue;
+    for (const m of line.match(NUMBER) ?? []) {
+      if (!ALLOWED_NUMBERS.has(m)) numbers++;
+    }
+  }
+  const strings =
+    (stringsView.match(STRING_COMPARE) ?? []).length +
+    (stringsView.match(STRING_ARM) ?? []).length;
+  return { numbers, strings };
+}
+
 // Common interface every language plugin implements. The core engine only
 // sees this — no language-specific AST leaks past this boundary.
 export interface LanguageAnalyzer {
@@ -70,6 +97,8 @@ export interface LanguageAnalyzer {
   normalizedLines(source: string): { line: number; text: string }[];
   // Declared data types and their optional/boolean field counts.
   stateSpace(source: string): TypeState[];
+  // Magic-literal counts (numbers in logic, strings in comparisons/arms).
+  magic(source: string): { numbers: number; strings: number };
 }
 
 // Extract `{...}` bodies whose opening brace is matched by `header`

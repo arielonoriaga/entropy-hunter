@@ -31,6 +31,7 @@ Clumping:     ${fmt(r.summary.clumping)}
 Dead code:    ${fmt(r.summary.deadcode)}
 Architecture: ${fmt(r.summary.architecture)}
 Reach:        ${fmt(r.summary.reach)}
+Magic:        ${fmt(r.summary.magic)}
 
 Entropy Index: ${fmt(r.summary.entropy)}
 
@@ -97,6 +98,10 @@ Data clumps
       : ""
   }
 
+Magic literals
+  numbers: ${f.magic_numbers}
+  strings (comparisons/arms): ${f.magic_strings}
+
 Graph
   transitive dependents: ${f.transitive_dependents}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${
     f.arch_violations ? `\n  architecture violations: ${f.arch_violations} inner→outer imports` : ""
@@ -144,6 +149,7 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | Dead code | ${fmt(r.summary.deadcode)} |
 | Architecture | ${fmt(r.summary.architecture)} |
 | Reach | ${fmt(r.summary.reach)} |
+| Magic | ${fmt(r.summary.magic)} |
 
 Trend: ${trendLabel(r.trend.delta)}
 

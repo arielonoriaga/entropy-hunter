@@ -62,7 +62,8 @@ not constants of nature:
 | deadcode | 100 if the file is an orphan (fan-in 0 and not an entrypoint/test/config), else 0. LOC-weighted summary = % of code nothing imports |
 | architecture | `norm(inner→outer imports, 3)` — `[architecture] layers` lists layer names inner→outer (default `domain, application, infrastructure, api`), matched against path segments; a domain file importing infrastructure is a violation (hexagonal direction). Unlayered paths are exempt |
 | reach | `norm(transitive dependents as % of repo, 25)` — how much of the codebase can break when this file changes |
-| entropy index | weighted mean of the nine scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05 — `[entropy]`) |
+| magic | `norm(magic literals per 100 LOC, 5)` — unnamed numbers in logic (0/1/2 exempt, named-constant declarations exempt) plus string literals in comparisons and case/match arms (stringly-typed logic wanting to be an enum). Density-based so big files earn no extra budget |
+| entropy index | weighted mean of the ten scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05, magic .05 — `[entropy]`) |
 | hotspot | weighted mean of complexity/coupling/churn (defaults .35/.35/.30 — `[hotspots]`) |
 
 Global summary scores are LOC-weighted means of per-file scores, so each

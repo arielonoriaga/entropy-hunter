@@ -5,12 +5,15 @@
 // for counting decision tokens.
 // singleQuotes: false for Rust — `'` is usually a lifetime, not a string.
 // hashComments: true for Python/Ruby/shell-style `#` line comments.
+// keepStrings: blank only comments, leave string contents intact (for
+// passes that inspect literals, e.g. magic-string detection).
 export function stripCommentsAndStrings(
   src: string,
-  opts: { singleQuotes?: boolean; hashComments?: boolean } = {},
+  opts: { singleQuotes?: boolean; hashComments?: boolean; keepStrings?: boolean } = {},
 ): string {
   const singleQuotes = opts.singleQuotes ?? true;
   const hashComments = opts.hashComments ?? false;
+  const keepStrings = opts.keepStrings ?? false;
   const out: string[] = [];
   let i = 0;
   const n = src.length;
@@ -38,10 +41,11 @@ export function stripCommentsAndStrings(
       }
     } else if (c === '"' || c === "`" || (c === "'" && singleQuotes)) {
       const quote = c;
+      const emit = keepStrings ? (ch: string) => out.push(ch) : push;
       out.push(src[i++]); // keep the quote itself
       while (i < n && src[i] !== quote) {
-        if (src[i] === "\\") push(src[i++]);
-        if (i < n) push(src[i++]);
+        if (src[i] === "\\") emit(src[i++]);
+        if (i < n) emit(src[i++]);
       }
       if (i < n) out.push(src[i++]);
     } else {

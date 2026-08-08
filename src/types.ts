@@ -41,6 +41,9 @@ export interface FileFacts {
   max_clump_fields: number; // worst single group size
   clump_prefix: string; // that group's prefix ("" if none)
   // Graph-derived (recomputed each run, not content-cached):
+  // Magic literals: unnamed numbers in logic, strings in comparisons/arms.
+  magic_numbers: number;
+  magic_strings: number;
   is_entrypoint: boolean; // main/lib/index/bin/tests — legitimately importless
   is_orphan: boolean; // fan_in == 0 and not an entrypoint: likely dead
   transitive_dependents: number; // files that can break when this one changes
@@ -57,6 +60,7 @@ export interface FileScores {
   deadcode_score: number;
   architecture_score: number;
   reach_score: number;
+  magic_score: number;
   hotspot_score: number;
   entropy_contribution: number;
 }
@@ -74,6 +78,7 @@ export interface Summary {
   deadcode: number;
   architecture: number;
   reach: number;
+  magic: number;
 }
 
 export interface ArchViolation {
@@ -84,8 +89,8 @@ export interface ArchViolation {
 }
 
 export interface AnalysisResult {
-  // v2: state signal; v3: clumping; v4: deadcode + architecture + reach
-  version: 4;
+  // v2: state; v3: clumping; v4: deadcode + architecture + reach; v5: magic
+  version: 5;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -111,6 +116,7 @@ export interface EntropyConfig {
     deadcode_weight: number;
     architecture_weight: number;
     reach_weight: number;
+    magic_weight: number;
   };
   analysis: { since: string };
   // Layer names inner→outer, matched against path segments. A file in an
@@ -135,6 +141,7 @@ export interface EntropyConfig {
     clump_fields_cap: number; // same-prefix fields in ONE type scoring 100
     arch_violations_cap: number; // inner→outer imports in ONE file scoring 100
     reach_percent_cap: number; // % of repo transitively depending on ONE file scoring 100
+    magic_per_100loc_cap: number; // magic literals per 100 LOC scoring 100 (density, not raw count)
   };
 }
 
@@ -149,6 +156,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     deadcode_weight: 0.05,
     architecture_weight: 0.05,
     reach_weight: 0.05,
+    magic_weight: 0.05,
   },
   analysis: { since: "30d" },
   architecture: { layers: "domain, application, infrastructure, api" },
@@ -168,5 +176,6 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     clump_fields_cap: 6,
     arch_violations_cap: 3,
     reach_percent_cap: 25,
+    magic_per_100loc_cap: 5,
   },
 };

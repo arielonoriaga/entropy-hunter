@@ -1,6 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  complexityFromMarkers, extractBraceBlocks, fieldNames, largestPrefixClump, normalizedLinesFrom,
+  complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
+  largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
@@ -104,6 +105,14 @@ export const rustAnalyzer: LanguageAnalyzer = {
 
   normalizedLines(source) {
     return normalizedLinesFrom(stripped(source));
+  },
+
+  magic(source) {
+    return countMagic(
+      stripped(source),
+      stripCommentsAndStrings(source, { singleQuotes: false, keepStrings: true }),
+      /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\b/,
+    );
   },
 
   stateSpace(source) {

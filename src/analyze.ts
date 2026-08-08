@@ -52,11 +52,12 @@ interface CachedBase {
     types: number; optional: number; boolean: number; max: number;
     clumps: number; maxClump: number; clumpPrefix: string;
   };
+  mg: { numbers: number; strings: number };
 }
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 
 export type ProgressFn = (message: string) => void;
 
@@ -138,6 +139,7 @@ export function analyzeRepo(
             { clump_fields: 0, clump_prefix: "" },
           ).clump_prefix,
         },
+        mg: analyzer.magic(src),
       };
     }
     if (contentFresh && row!.fileset_hash === filesetHash) {
@@ -184,6 +186,8 @@ export function analyzeRepo(
       data_clumps: base.st.clumps,
       max_clump_fields: base.st.maxClump,
       clump_prefix: base.st.clumpPrefix,
+      magic_numbers: base.mg.numbers,
+      magic_strings: base.mg.strings,
       is_entrypoint: isEntrypoint(path),
       is_orphan: false,
       transitive_dependents: 0,
@@ -247,7 +251,8 @@ export function analyzeRepo(
   const entropyWeightSum =
     ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
       ew.duplication_weight + ew.state_weight + ew.clumping_weight +
-      ew.deadcode_weight + ew.architecture_weight + ew.reach_weight || 1;
+      ew.deadcode_weight + ew.architecture_weight + ew.reach_weight +
+      ew.magic_weight || 1;
   const totalFiles = Math.max(facts.size - 1, 1);
   const hotspotWeightSum =
     hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
@@ -276,6 +281,14 @@ export function analyzeRepo(
     const reach_score = round1(
       normalize((f.transitive_dependents / totalFiles) * 100, s.reach_percent_cap),
     );
+    // Density, not raw count — a big file earns no extra magic budget.
+    // Test files are exempt: their literals are assertions, not smells
+    // (raw magic_numbers/magic_strings facts are still recorded).
+    const magic_score = isTestFile(f.path)
+      ? 0
+      : round1(
+          normalize(((f.magic_numbers + f.magic_strings) / Math.max(f.loc, 1)) * 100, s.magic_per_100loc_cap),
+        );
     const hotspot_score = round1(
       (complexity_score * hw.complexity_weight +
         coupling_score * hw.coupling_weight +
@@ -290,7 +303,8 @@ export function analyzeRepo(
         clumping_score * ew.clumping_weight +
         deadcode_score * ew.deadcode_weight +
         architecture_score * ew.architecture_weight +
-        reach_score * ew.reach_weight) / entropyWeightSum;
+        reach_score * ew.reach_weight +
+        magic_score * ew.magic_weight) / entropyWeightSum;
     return {
       ...f,
       complexity_score,
@@ -302,6 +316,7 @@ export function analyzeRepo(
       deadcode_score,
       architecture_score,
       reach_score,
+      magic_score,
       hotspot_score,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
     };
@@ -322,11 +337,12 @@ export function analyzeRepo(
         deadcode: wmean((f) => f.deadcode_score),
         architecture: wmean((f) => f.architecture_score),
         reach: wmean((f) => f.reach_score),
+        magic: wmean((f) => f.magic_score),
         entropy: 0,
       }
     : {
         complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
-        clumping: 0, deadcode: 0, architecture: 0, reach: 0, entropy: 0,
+        clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0, entropy: 0,
       };
   summary.entropy = round1(
     (summary.complexity * ew.complexity_weight +
@@ -337,7 +353,8 @@ export function analyzeRepo(
       summary.clumping * ew.clumping_weight +
       summary.deadcode * ew.deadcode_weight +
       summary.architecture * ew.architecture_weight +
-      summary.reach * ew.reach_weight) / entropyWeightSum,
+      summary.reach * ew.reach_weight +
+      summary.magic * ew.magic_weight) / entropyWeightSum,
   );
 
   const byLanguage: Record<string, number> = {};
@@ -348,7 +365,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 4,
+    version: 5,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,
@@ -368,15 +385,22 @@ const ENTRY_BASENAMES = new Set([
   "index.ts", "index.tsx", "index.js", "index.mjs",
   "main.ts", "main.tsx", "main.js", "app.ts", "app.tsx", "cli.ts",
 ]);
+export function isTestFile(path: string): boolean {
+  const base = path.split("/").pop()!;
+  return (
+    /\.(test|spec)\.[\w.]+$/.test(base) ||
+    /(_tests?|^tests?)\.rs$/.test(base) ||
+    /(^|\/)(tests|__tests__)\//.test(path)
+  );
+}
+
 export function isEntrypoint(path: string): boolean {
   const base = path.split("/").pop()!;
   if (ENTRY_BASENAMES.has(base)) return true;
-  if (/\.(test|spec|stories|config|setup)\.[\w.]+$/.test(base)) return true;
-  // Rust test modules are pulled in via `#[cfg(test)] mod x;` — attribute
-  // and declaration share a line, which the mod-import regex doesn't track.
-  if (/(_tests?|^tests?)\.rs$/.test(base)) return true;
+  if (isTestFile(path)) return true;
+  if (/\.(stories|config|setup)\.[\w.]+$/.test(base)) return true;
   if (/\.(sh|bash|zsh)$/.test(base)) return true; // scripts run, not import
-  return /(^|\/)(bin|tests|__tests__|examples|benches|migrations|scripts)\//.test(path);
+  return /(^|\/)(bin|examples|benches|migrations|scripts)\//.test(path);
 }
 
 // Transitive dependents per file: BFS over the inverted dependency graph.
