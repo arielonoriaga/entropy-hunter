@@ -42,6 +42,12 @@ export interface FileFacts {
   data_clumps: number; // prefix groups of 3+ fields across all types
   max_clump_fields: number; // worst single group size
   clump_prefix: string; // that group's prefix ("" if none)
+  // Guard clumps: sibling ifs sharing a leading condition ("Consolidate
+  // Conditional Expression") — the guard is re-checked N times instead of
+  // once with nested/early-return branches inside.
+  guard_clumps: number; // groups of 2+ sibling ifs sharing a leading conjunct
+  max_guard_group: number; // worst single group's ifs count
+  guard_prefix: string; // that group's shared leading condition ("" if none)
   // Graph-derived (recomputed each run, not content-cached):
   // Magic literals: unnamed numbers in logic, strings in comparisons/arms.
   magic_numbers: number;
@@ -63,6 +69,7 @@ export interface FileScores {
   architecture_score: number;
   reach_score: number;
   magic_score: number;
+  guard_score: number;
   // One sentence naming the dominant raw fact behind hotspot_score, so an
   // agent (or human) doesn't have to reverse-engineer which signal fired.
   why: string;
@@ -84,6 +91,7 @@ export interface Summary {
   architecture: number;
   reach: number;
   magic: number;
+  guard: number;
 }
 
 export interface ArchViolation {
@@ -95,8 +103,9 @@ export interface ArchViolation {
 
 export interface AnalysisResult {
   // v2: state; v3: clumping; v4: deadcode+architecture+reach; v5: magic;
-  // v6: weighted/trending churn, files_skipped, hotspot why-strings
-  version: 6;
+  // v6: weighted/trending churn, files_skipped, hotspot why-strings;
+  // v7: guard (shared-condition / consolidate-conditional-expression) signal
+  version: 7;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -124,6 +133,7 @@ export interface EntropyConfig {
     architecture_weight: number;
     reach_weight: number;
     magic_weight: number;
+    guard_weight: number;
   };
   analysis: { since: string };
   // Layer names inner→outer, matched against path segments. A file in an
@@ -149,6 +159,7 @@ export interface EntropyConfig {
     arch_violations_cap: number; // inner→outer imports in ONE file scoring 100
     reach_percent_cap: number; // % of repo transitively depending on ONE file scoring 100
     magic_per_100loc_cap: number; // magic literals per 100 LOC scoring 100 (density, not raw count)
+    guard_group_cap: number; // sibling ifs in ONE shared-guard group scoring 100
   };
 }
 
@@ -164,6 +175,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     architecture_weight: 0.05,
     reach_weight: 0.05,
     magic_weight: 0.05,
+    guard_weight: 0.05,
   },
   analysis: { since: "30d" },
   architecture: { layers: "domain, application, infrastructure, api" },
@@ -184,5 +196,6 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     arch_violations_cap: 3,
     reach_percent_cap: 25,
     magic_per_100loc_cap: 5,
+    guard_group_cap: 4,
   },
 };

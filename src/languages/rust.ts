@@ -1,7 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
   complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
-  largestPrefixClump, normalizedLinesFrom,
+  findSharedConditionGroups, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
@@ -113,6 +113,11 @@ export const rustAnalyzer: LanguageAnalyzer = {
       stripCommentsAndStrings(source, { singleQuotes: false, keepStrings: true }),
       /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\b/,
     );
+  },
+
+  sharedConditions(source) {
+    // Rust `if` has no parens: `if a && b {`.
+    return findSharedConditionGroups(stripped(source), /^(\s*)if\s+(.+?)\s*\{\s*$/);
   },
 
   stateSpace(source) {

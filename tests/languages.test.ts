@@ -163,6 +163,41 @@ if (attempt > 12) fail();`;
   });
 });
 
+describe("shared-condition (guard clump) detection", () => {
+  test("ts: three sibling ifs sharing a leading conjunct form one group; unrelated ifs don't", () => {
+    const groups = typescriptAnalyzer.sharedConditions(read("typescript/guards/checkout.ts"));
+    expect(groups.length).toBe(1);
+    expect(groups[0]).toMatchObject({ prefix: "isLoggedIn()", count: 2 });
+  });
+
+  test("rust: bare (no-paren) if conditions are matched the same way", () => {
+    const groups = rustAnalyzer.sharedConditions(read("rust/guards/src/lib.rs"));
+    expect(groups.length).toBe(1);
+    expect(groups[0]).toMatchObject({ prefix: "is_admin", count: 3 });
+  });
+
+  test("a single guard, or guards with nothing after the leading conjunct, are not flagged", () => {
+    const src = `function f(a: boolean) {
+  if (a) { return 1; }
+  if (a) { return 2; }
+}`;
+    // both conditions are BARE "a" with no second conjunct — nothing to
+    // consolidate beyond plain duplication, which the duplication signal covers
+    expect(typescriptAnalyzer.sharedConditions(src)).toEqual([]);
+  });
+
+  test("different indentation (different scope) breaks the group", () => {
+    const src = `function outer(x: boolean, y: boolean) {
+  if (x && a()) { f(); }
+  if (x) {
+    if (x && b()) { g(); }
+  }
+}`;
+    const groups = typescriptAnalyzer.sharedConditions(src);
+    expect(groups).toEqual([]); // the nested one is indented differently, no group
+  });
+});
+
 describe("rust dependency extraction", () => {
   const files = new Set([
     "rust/coupled/src/main.rs",

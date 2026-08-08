@@ -89,6 +89,11 @@ export class Storage {
       "ALTER TABLE file_metrics ADD COLUMN weighted_commits REAL",
       "ALTER TABLE file_metrics ADD COLUMN churn_trend TEXT",
       "ALTER TABLE file_metrics ADD COLUMN why TEXT",
+      "ALTER TABLE snapshots ADD COLUMN guard REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE file_metrics ADD COLUMN guard_clumps INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN max_guard_group INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN guard_prefix TEXT",
+      "ALTER TABLE file_metrics ADD COLUMN guard_score REAL",
     ]) {
       try {
         this.db.exec(ddl);
@@ -153,8 +158,8 @@ export class Storage {
     const insert = this.db.query(`
       INSERT INTO snapshots (repository, commit_hash, timestamp, entropy,
         complexity, coupling, churn, duplication, state, clumping, deadcode,
-        architecture, reach, magic, files_analyzed, report_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        architecture, reach, magic, guard, files_analyzed, report_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
     `);
     const { summary: s } = result;
@@ -168,7 +173,7 @@ export class Storage {
     const row = insert.get(
       result.repository.name, result.repository.commit, result.timestamp,
       s.entropy, s.complexity, s.coupling, s.churn, s.duplication, s.state,
-      s.clumping, s.deadcode, s.architecture, s.reach, s.magic,
+      s.clumping, s.deadcode, s.architecture, s.reach, s.magic, s.guard,
       result.files_analyzed, JSON.stringify(slim),
     ) as { id: number };
 
@@ -185,8 +190,9 @@ export class Storage {
         max_clump_fields, clump_prefix, clumping_score, is_orphan,
         transitive_dependents, arch_violations, deadcode_score,
         architecture_score, reach_score, magic_numbers, magic_strings,
-        magic_score, weighted_commits, churn_trend, why)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        magic_score, weighted_commits, churn_trend, why, guard_clumps,
+        max_guard_group, guard_prefix, guard_score)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const tx = this.db.transaction((files: FileMetrics[]) => {
       for (const f of files) {
@@ -204,6 +210,7 @@ export class Storage {
           f.deadcode_score, f.architecture_score, f.reach_score,
           f.magic_numbers, f.magic_strings, f.magic_score,
           f.weighted_commits, f.churn_trend, f.why,
+          f.guard_clumps, f.max_guard_group, f.guard_prefix, f.guard_score,
         );
       }
     });

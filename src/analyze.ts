@@ -86,11 +86,12 @@ interface CachedBase {
     clumps: number; maxClump: number; clumpPrefix: string;
   };
   mg: { numbers: number; strings: number };
+  gd: { groups: number; max: number; prefix: string };
 }
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v6"; // v6: multi-line function signatures no longer misdetected as bodyless
+const CACHE_VERSION = "v7"; // v7: guard-clump (shared-condition) signal
 
 export type ProgressFn = (message: string) => void;
 
@@ -174,6 +175,13 @@ export function analyzeRepo(
           ).clump_prefix,
         },
         mg: analyzer.magic(src),
+        gd: (() => {
+          const groups = analyzer.sharedConditions(src);
+          const worst = groups.reduce((best, g) => (g.count > best.count ? g : best), {
+            prefix: "", count: 0, lines: [] as number[],
+          });
+          return { groups: groups.length, max: worst.count, prefix: worst.prefix };
+        })(),
       };
     }
     if (contentFresh && row!.fileset_hash === filesetHash) {
@@ -227,6 +235,9 @@ export function analyzeRepo(
       clump_prefix: base.st.clumpPrefix,
       magic_numbers: base.mg.numbers,
       magic_strings: base.mg.strings,
+      guard_clumps: base.gd.groups,
+      max_guard_group: base.gd.max,
+      guard_prefix: base.gd.prefix,
       is_entrypoint: isEntrypoint(path),
       is_orphan: false,
       transitive_dependents: 0,
@@ -291,7 +302,7 @@ export function analyzeRepo(
     ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
       ew.duplication_weight + ew.state_weight + ew.clumping_weight +
       ew.deadcode_weight + ew.architecture_weight + ew.reach_weight +
-      ew.magic_weight || 1;
+      ew.magic_weight + ew.guard_weight || 1;
   const totalFiles = Math.max(facts.size - 1, 1);
   const hotspotWeightSum =
     hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
@@ -331,6 +342,9 @@ export function analyzeRepo(
       : round1(
           normalize(((f.magic_numbers + f.magic_strings) / Math.max(f.loc, 1)) * 100, s.magic_per_100loc_cap),
         );
+    // Worst single group drives the score, like state/clumping: one guard
+    // re-checked `guard_group_cap` times in siblings scores 100.
+    const guard_score = round1(normalize(f.max_guard_group, s.guard_group_cap));
     const hotspot_score = round1(
       (complexity_score * hw.complexity_weight +
         coupling_score * hw.coupling_weight +
@@ -347,7 +361,8 @@ export function analyzeRepo(
         deadcode_score * ew.deadcode_weight +
         architecture_score * ew.architecture_weight +
         reach_score * ew.reach_weight +
-        magic_score * ew.magic_weight) / entropyWeightSum;
+        magic_score * ew.magic_weight +
+        guard_score * ew.guard_weight) / entropyWeightSum;
     return {
       ...f,
       complexity_score,
@@ -360,6 +375,7 @@ export function analyzeRepo(
       architecture_score,
       reach_score,
       magic_score,
+      guard_score,
       hotspot_score,
       why,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
@@ -382,11 +398,13 @@ export function analyzeRepo(
         architecture: wmean((f) => f.architecture_score),
         reach: wmean((f) => f.reach_score),
         magic: wmean((f) => f.magic_score),
+        guard: wmean((f) => f.guard_score),
         entropy: 0,
       }
     : {
         complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
-        clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0, entropy: 0,
+        clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0,
+        guard: 0, entropy: 0,
       };
   summary.entropy = round1(
     (summary.complexity * ew.complexity_weight +
@@ -398,7 +416,8 @@ export function analyzeRepo(
       summary.deadcode * ew.deadcode_weight +
       summary.architecture * ew.architecture_weight +
       summary.reach * ew.reach_weight +
-      summary.magic * ew.magic_weight) / entropyWeightSum,
+      summary.magic * ew.magic_weight +
+      summary.guard * ew.guard_weight) / entropyWeightSum,
   );
 
   const byLanguage: Record<string, number> = {};
@@ -409,7 +428,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 6,
+    version: 7,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,

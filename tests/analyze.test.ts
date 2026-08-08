@@ -60,10 +60,23 @@ describe("analyzeRepo on fixtures", () => {
   const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
   test("finds dedicated and generic-fallback languages", () => {
-    expect(result.files_by_language.rust).toBe(8);
-    expect(result.files_by_language.typescript).toBe(10);
+    expect(result.files_by_language.rust).toBe(9);
+    expect(result.files_by_language.typescript).toBe(11);
     expect(result.files_by_language.python).toBe(2); // generic fallback
-    expect(result.files_analyzed).toBe(20);
+    expect(result.files_analyzed).toBe(22);
+  });
+
+  test("guard signal: sibling ifs sharing a guard are detected and scored", () => {
+    const ts = result.files.find((f) => f.path === "typescript/guards/checkout.ts")!;
+    expect(ts.guard_clumps).toBe(1);
+    expect(ts.max_guard_group).toBe(2);
+    expect(ts.guard_prefix).toBe("isLoggedIn()");
+    expect(ts.guard_score).toBe(50); // 2 ifs at default cap 4
+    const rust = result.files.find((f) => f.path === "rust/guards/src/lib.rs")!;
+    expect(rust.max_guard_group).toBe(3);
+    expect(rust.guard_score).toBe(75);
+    const clean = result.files.find((f) => f.path === "typescript/simple/util.ts")!;
+    expect(clean.guard_score).toBe(0);
   });
 
   test("magic signal: literal-dense files score, named-constant files don't", () => {
@@ -162,7 +175,7 @@ describe("analyzeRepo on fixtures", () => {
     const w = DEFAULT_CONFIG.entropy;
     const keys = [
       "complexity", "coupling", "churn", "duplication", "state",
-      "clumping", "deadcode", "architecture", "reach", "magic",
+      "clumping", "deadcode", "architecture", "reach", "magic", "guard",
     ] as const;
     const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     const expected =
@@ -191,14 +204,14 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 6)", () => {
-    expect(result.version).toBe(6);
+  test("JSON schema shape (version 7)", () => {
+    expect(result.version).toBe(7);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
     for (const k of [
       "entropy", "complexity", "coupling", "churn", "duplication",
-      "state", "clumping", "deadcode", "architecture", "reach", "magic",
+      "state", "clumping", "deadcode", "architecture", "reach", "magic", "guard",
     ]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
     }
@@ -219,6 +232,7 @@ describe("analyzeRepo on fixtures", () => {
       "max_state_fields", "data_clumps", "max_clump_fields",
       "transitive_dependents", "arch_violations",
       "magic_numbers", "magic_strings", "magic_score",
+      "guard_clumps", "max_guard_group", "guard_score",
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }

@@ -32,6 +32,7 @@ Dead code:    ${fmt(r.summary.deadcode)}
 Architecture: ${fmt(r.summary.architecture)}
 Reach:        ${fmt(r.summary.reach)}
 Magic:        ${fmt(r.summary.magic)}
+Guard:        ${fmt(r.summary.guard)}
 
 Entropy Index: ${fmt(r.summary.entropy)}
 
@@ -102,6 +103,13 @@ Magic literals
   numbers: ${f.magic_numbers}
   strings (comparisons/arms): ${f.magic_strings}
 
+Guard clumps
+  groups of 2+ sibling ifs sharing a guard: ${f.guard_clumps}${
+    f.max_guard_group
+      ? `\n  worst: ${f.max_guard_group} ifs guarded by "${f.guard_prefix}" — consolidate into one guard with nested/early-return branches`
+      : ""
+  }
+
 Graph
   transitive dependents: ${f.transitive_dependents}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${
     f.arch_violations ? `\n  architecture violations: ${f.arch_violations} inner→outer imports` : ""
@@ -150,6 +158,7 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | Architecture | ${fmt(r.summary.architecture)} |
 | Reach | ${fmt(r.summary.reach)} |
 | Magic | ${fmt(r.summary.magic)} |
+| Guard | ${fmt(r.summary.guard)} |
 
 Trend: ${trendLabel(r.trend.delta)}
 

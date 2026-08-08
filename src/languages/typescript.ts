@@ -1,7 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
   complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
-  largestPrefixClump, normalizedLinesFrom,
+  findSharedConditionGroups, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
@@ -106,6 +106,10 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
       stripCommentsAndStrings(source, { keepStrings: true }),
       /^\s*(?:export\s+)?const\b/,
     );
+  },
+
+  sharedConditions(source) {
+    return findSharedConditionGroups(stripped(source), /^(\s*)if\s*\((.+)\)\s*\{?\s*$/);
   },
 
   stateSpace(source) {

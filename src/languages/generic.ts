@@ -1,5 +1,7 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
-import { complexityFromMarkers, countMagic, normalizedLinesFrom } from "./analyzer";
+import {
+  complexityFromMarkers, countMagic, findSharedConditionGroups, normalizedLinesFrom,
+} from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
 // Language-agnostic fallback: churn, duplication, LOC and normalization are
@@ -82,6 +84,15 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
           keepStrings: true,
         }),
         /^\s*(?:const|final|static|readonly)\b|^[A-Z_][A-Z0-9_]*\s*=/,
+      );
+    },
+    sharedConditions(source) {
+      // Covers both `if (x && y) {`/`if x && y {` (C-like/Go) and Python's
+      // colon-terminated, parenless, `and`-keyword form in one pass.
+      return findSharedConditionGroups(
+        strip(source, path),
+        /^(\s*)if\s*\(?(.+?)\)?\s*[{:]\s*$/,
+        /&&|\band\b/,
       );
     },
     // Field-shape analysis needs typed syntax knowledge — dedicated plugins only.

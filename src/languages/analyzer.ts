@@ -58,6 +58,60 @@ export function fieldNames(body: string): string[] {
   return [...body.matchAll(/([A-Za-z_$][\w$]*)\s*\??:/g)].map((m) => m[1]);
 }
 
+// Sibling `if`s sharing a leading `&&` conjunct — the same guard is being
+// re-evaluated N times instead of checked once with nested/early-return
+// branches inside (Fowler's "Consolidate Conditional Expression").
+export interface ConditionGroup {
+  prefix: string;
+  count: number;
+  lines: number[];
+}
+
+const MIN_GROUP = 2;
+const NEARBY_LINES = 20; // how close two ifs must be to count as "siblings"
+
+// ifPattern must capture exactly (indent, condition text) and match a
+// same-line `if` header (paren-style for TS/generic, bare for Rust).
+// conjunctSplit: how "and" is spelled — `&&` for C-like languages, also
+// `\band\b` for Python/Ruby-family (passed by the generic analyzer).
+export function findSharedConditionGroups(
+  stripped: string,
+  ifPattern: RegExp,
+  conjunctSplit: RegExp = /&&/,
+): ConditionGroup[] {
+  const lines = stripped.split("\n");
+  const hits: { indent: string; prefix: string; line: number }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(ifPattern);
+    if (!m) continue;
+    const conjuncts = m[2].split(conjunctSplit).map((s) => s.trim()).filter(Boolean);
+    // Need a leading guard AND something else after it — a bare repeated
+    // condition with nothing else is plain duplication, not this smell.
+    if (conjuncts.length < 2) continue;
+    hits.push({ indent: m[1], prefix: conjuncts[0], line: i + 1 });
+  }
+
+  const groups: ConditionGroup[] = [];
+  let i = 0;
+  while (i < hits.length) {
+    let j = i + 1;
+    while (
+      j < hits.length &&
+      hits[j].indent === hits[i].indent &&
+      hits[j].prefix === hits[i].prefix &&
+      hits[j].line - hits[j - 1].line <= NEARBY_LINES
+    ) {
+      j++;
+    }
+    const size = j - i;
+    if (size >= MIN_GROUP) {
+      groups.push({ prefix: hits[i].prefix, count: size, lines: hits.slice(i, j).map((h) => h.line) });
+    }
+    i = j > i + 1 ? j : i + 1;
+  }
+  return groups;
+}
+
 // Magic literals in logic positions. Numbers: bare numeric literals outside
 // named-constant declarations, excluding conventional 0/1/2. Strings:
 // literals used in comparisons or case/match arms — stringly-typed logic
@@ -110,6 +164,8 @@ export interface LanguageAnalyzer {
   stateSpace(source: string): TypeState[];
   // Magic-literal counts (numbers in logic, strings in comparisons/arms).
   magic(source: string): { numbers: number; strings: number };
+  // Sibling ifs sharing a leading guard conjunct — see findSharedConditionGroups.
+  sharedConditions(source: string): ConditionGroup[];
 }
 
 // Extract `{...}` bodies whose opening brace is matched by `header`
