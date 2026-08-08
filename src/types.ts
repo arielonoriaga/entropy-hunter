@@ -23,6 +23,8 @@ export interface FileFacts {
   dependencies: string[]; // resolved internal deps (for agents: get_dependencies)
   dependents: string[]; // internal files importing this one (get_dependents)
   commits: number;
+  weighted_commits: number; // recency-decayed (90-day half-life) — recent churn outweighs old
+  churn_trend: "accelerating" | "stable" | "cooling";
   lines_added: number;
   lines_deleted: number;
   lines_changed: number;
@@ -61,6 +63,9 @@ export interface FileScores {
   architecture_score: number;
   reach_score: number;
   magic_score: number;
+  // One sentence naming the dominant raw fact behind hotspot_score, so an
+  // agent (or human) doesn't have to reverse-engineer which signal fired.
+  why: string;
   hotspot_score: number;
   entropy_contribution: number;
 }
@@ -89,11 +94,13 @@ export interface ArchViolation {
 }
 
 export interface AnalysisResult {
-  // v2: state; v3: clumping; v4: deadcode + architecture + reach; v5: magic
-  version: 5;
+  // v2: state; v3: clumping; v4: deadcode+architecture+reach; v5: magic;
+  // v6: weighted/trending churn, files_skipped, hotspot why-strings
+  version: 6;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
+  files_skipped: string[]; // paths that failed to read (permissions, deleted mid-run, non-UTF8)
   files_by_language: Record<string, number>;
   summary: Summary;
   files: FileMetrics[];

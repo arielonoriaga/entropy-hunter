@@ -19,7 +19,7 @@ export function renderAnalysis(r: AnalysisResult): string {
 Repository: ${r.repository.name}
 Commit: ${r.repository.commit}
 
-Files analyzed: ${r.files_analyzed}
+Files analyzed: ${r.files_analyzed}${r.files_skipped.length ? ` (${r.files_skipped.length} skipped — unreadable)` : ""}
 ${langs}
 
 Complexity:   ${fmt(r.summary.complexity)}
@@ -48,12 +48,12 @@ export function renderHotspots(hotspots: FileMetrics[], limit: number): string {
   const rows = hotspots.slice(0, limit).map(
     (h, i) =>
       `${i + 1}. ${h.path}
-   score: ${Math.round(h.hotspot_score)}
+   score: ${Math.round(h.hotspot_score)} — ${h.why}
    complexity: ${Math.round(h.complexity_score)}
    coupling: ${Math.round(h.coupling_score)}
    churn: ${Math.round(h.churn_score)}`,
   );
-  return `HOTSPOTS\n\n${rows.join("\n\n") || "(no files analyzed)"}`;
+  return `HOTSPOTS\n\n${rows.join("\n\n") || "(no files analyzed — measured, and clean)"}`;
 }
 
 export function renderFile(f: FileMetrics): string {
@@ -78,7 +78,7 @@ Coupling
   dependents: ${f.dependent_count}
 
 Churn
-  commits: ${f.commits}
+  commits: ${f.commits} (${f.weighted_commits} recency-weighted, ${f.churn_trend})
   additions: ${f.lines_added}
   deletions: ${f.lines_deleted}
 
@@ -125,7 +125,7 @@ export function renderMarkdown(r: AnalysisResult): string {
   const hs = r.hotspots
     .map(
       (h, i) =>
-        `| ${i + 1} | \`${h.path}\` | ${Math.round(h.hotspot_score)} | ${Math.round(h.complexity_score)} | ${Math.round(h.coupling_score)} | ${Math.round(h.churn_score)} |`,
+        `| ${i + 1} | \`${h.path}\` | ${Math.round(h.hotspot_score)} | ${Math.round(h.complexity_score)} | ${Math.round(h.coupling_score)} | ${Math.round(h.churn_score)} | ${h.why} |`,
     )
     .join("\n");
   return `# Entropy Report — ${r.repository.name}
@@ -155,8 +155,12 @@ Trend: ${trendLabel(r.trend.delta)}
 
 ## Hotspots
 
-| # | File | Score | Complexity | Coupling | Churn |
-|---|---|---|---|---|---|
-${hs || "| - | (none) | | | | |"}
-${r.cycles.length ? `\n## Circular dependencies\n\n${r.cycles.map((c) => `- ${c.join(" → ")}`).join("\n")}` : ""}`;
+| # | File | Score | Complexity | Coupling | Churn | Why |
+|---|---|---|---|---|---|---|
+${hs || "| - | *(none — measured, and clean)* | | | | | |"}
+${r.cycles.length ? `\n## Circular dependencies\n\n${r.cycles.map((c) => `- ${c.join(" → ")}`).join("\n")}` : ""}${
+    r.architecture_violations.length
+      ? `\n## Architecture violations\n\n${r.architecture_violations.map((v) => `- \`${v.from}\` (${v.from_layer}) → \`${v.to}\` (${v.to_layer})`).join("\n")}`
+      : ""
+  }${r.files_skipped.length ? `\n## Files skipped\n\n${r.files_skipped.map((p) => `- \`${p}\``).join("\n")}` : ""}`;
 }

@@ -191,8 +191,8 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 5)", () => {
-    expect(result.version).toBe(5);
+  test("JSON schema shape (version 6)", () => {
+    expect(result.version).toBe(6);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
@@ -210,7 +210,7 @@ describe("analyzeRepo on fixtures", () => {
     for (const k of [
       "loc", "complexity_total", "complexity_average", "complexity_max",
       "fan_in", "fan_out", "dependency_count", "dependent_count",
-      "commits", "lines_added", "lines_deleted", "lines_changed",
+      "commits", "weighted_commits", "lines_added", "lines_deleted", "lines_changed",
       "duplicated_lines", "duplicated_blocks", "duplication_percentage",
       "complexity_score", "coupling_score", "churn_score",
       "duplication_score", "state_score", "clumping_score", "deadcode_score",
@@ -222,11 +222,36 @@ describe("analyzeRepo on fixtures", () => {
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }
+    expect(["accelerating", "stable", "cooling"]).toContain(f.churn_trend);
+    expect(typeof f.why).toBe("string");
+    expect(Array.isArray(result.files_skipped)).toBe(true);
   });
 
   test("deterministic: analyzing twice yields identical metrics", () => {
     const again = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
     const strip = (r: typeof result) => ({ ...r, timestamp: null });
     expect(strip(again)).toEqual(strip(result));
+  });
+
+  test("deterministic across a custom (non-default) weight config", () => {
+    const custom = structuredClone(DEFAULT_CONFIG);
+    custom.entropy.complexity_weight = 0.5;
+    custom.entropy.coupling_weight = 0.1;
+    custom.scoring.state_fields_cap = 3;
+    const a = analyzeRepo(FIXTURES, custom, custom.analysis.since, null, null);
+    const b = analyzeRepo(FIXTURES, custom, custom.analysis.since, null, null);
+    const strip = (r: typeof a) => ({ ...r, timestamp: null });
+    expect(strip(a)).toEqual(strip(b));
+    // and the custom weights actually took effect vs the default run
+    expect(a.summary.entropy).not.toBe(result.summary.entropy);
+  });
+
+  test("hotspot why-strings name a real signal, or say so when none dominates", () => {
+    for (const h of result.hotspots) {
+      expect(h.why.length).toBeGreaterThan(0);
+      if (h.hotspot_score > 0) {
+        expect(h.why).toMatch(/^driven by (complexity|coupling|churn) \(/);
+      }
+    }
   });
 });

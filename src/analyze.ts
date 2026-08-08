@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { AnalysisResult, EntropyConfig, FileFacts, FileMetrics, Summary } from "./types";
 import { analyzerFor } from "./languages";
@@ -13,13 +13,29 @@ const SKIP_DIRS = new Set([
   "build", "out", "vendor", "coverage", ".next", ".cache",
 ]);
 
-function walkFiles(root: string, dir = root, acc: string[] = []): string[] {
+// visitedDirs guards against symlink cycles (a directory symlinked into its
+// own descendant) — without it this recurses until the stack overflows.
+function walkFiles(
+  root: string,
+  dir = root,
+  acc: string[] = [],
+  visitedDirs = new Set<string>(),
+): string[] {
+  let real: string;
+  try {
+    real = realpathSync(dir);
+  } catch {
+    return acc; // broken symlink or race with a deleted dir — skip, don't crash
+  }
+  if (visitedDirs.has(real)) return acc;
+  visitedDirs.add(real);
+
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
     const st = statSync(full, { throwIfNoEntry: false });
     if (!st) continue;
     if (st.isDirectory()) {
-      if (!SKIP_DIRS.has(name) && !name.startsWith(".")) walkFiles(root, full, acc);
+      if (!SKIP_DIRS.has(name) && !name.startsWith(".")) walkFiles(root, full, acc, visitedDirs);
     } else {
       acc.push(relative(root, full).replaceAll("\\", "/"));
     }
@@ -42,6 +58,23 @@ export function normalize(value: number, cap: number): number {
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
+
+// One sentence naming the raw fact behind whichever of the three hotspot
+// dimensions dominates — so a finding is traceable without cross-referencing
+// the scoring config, and an agent doesn't have to guess which signal fired.
+function explainHotspot(
+  f: FileFacts,
+  scores: { complexity_score: number; coupling_score: number; churn_score: number },
+): string {
+  const dims = [
+    { name: "complexity", score: scores.complexity_score, fact: `complexity_max ${f.complexity_max}` },
+    { name: "coupling", score: scores.coupling_score, fact: `fan_in ${f.fan_in} + fan_out ${f.fan_out}` },
+    { name: "churn", score: scores.churn_score, fact: `${f.commits} commits (${f.weighted_commits} weighted, ${f.churn_trend})` },
+  ];
+  const top = dims.reduce((a, b) => (b.score > a.score ? b : a));
+  if (top.score === 0) return "no dominant signal — all three dimensions are low";
+  return `driven by ${top.name} (${top.fact})`;
+}
 
 interface CachedBase {
   language: string;
@@ -89,11 +122,12 @@ export function analyzeRepo(
   }
 
   const sources = new Map<string, string>();
+  const files_skipped: string[] = [];
   for (const p of paths) {
     try {
       sources.set(p, readFileSync(join(repo, p), "utf8"));
     } catch {
-      /* unreadable (deleted mid-run, permissions) — skip */
+      files_skipped.push(p); // unreadable: deleted mid-run, permissions, non-UTF8
     }
   }
 
@@ -157,7 +191,10 @@ export function analyzeRepo(
     const cx = base.cx;
     dupInput.set(path, base.fp);
     depGraph.set(path, deps.internal);
-    const ch = churnMap.get(path) ?? { commits: 0, lines_added: 0, lines_deleted: 0 };
+    const ch = churnMap.get(path) ?? {
+      commits: 0, lines_added: 0, lines_deleted: 0, weighted_commits: 0,
+      trend: "stable" as const,
+    };
     facts.set(path, {
       path,
       language: base.language,
@@ -173,6 +210,8 @@ export function analyzeRepo(
       dependencies: deps.internal,
       dependents: [],
       commits: ch.commits,
+      weighted_commits: ch.weighted_commits,
+      churn_trend: ch.trend,
       lines_added: ch.lines_added,
       lines_deleted: ch.lines_deleted,
       lines_changed: ch.lines_added + ch.lines_deleted,
@@ -265,8 +304,11 @@ export function analyzeRepo(
     );
     const coupling_score = round1(normalize(f.fan_in + f.fan_out, s.coupling_cap));
     const churnPerLine = f.lines_changed / Math.max(f.loc, 1);
+    // weighted_commits, not raw commits: a file quiet for a year shouldn't
+    // outrank one actively churning this week just because it has more
+    // total commits (recency-decayed, 90-day half-life — see git.ts).
     const churn_score = round1(
-      0.5 * normalize(f.commits, s.churn_commits_cap) +
+      0.5 * normalize(f.weighted_commits, s.churn_commits_cap) +
         0.5 * normalize(churnPerLine, s.churn_per_line_cap),
     );
     const duplication_score = round1(f.duplication_percentage);
@@ -294,6 +336,7 @@ export function analyzeRepo(
         coupling_score * hw.coupling_weight +
         churn_score * hw.churn_weight) / hotspotWeightSum,
     );
+    const why = explainHotspot(f, { complexity_score, coupling_score, churn_score });
     const fileEntropy =
       (complexity_score * ew.complexity_weight +
         coupling_score * ew.coupling_weight +
@@ -318,6 +361,7 @@ export function analyzeRepo(
       reach_score,
       magic_score,
       hotspot_score,
+      why,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
     };
   });
@@ -365,10 +409,11 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 5,
+    version: 6,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,
+    files_skipped,
     files_by_language: byLanguage,
     summary,
     files: files.sort((a, b) => a.path.localeCompare(b.path)),

@@ -3,10 +3,14 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { analyzeRepo } from "./analyze";
 import { configPath, dbPath, initRepo, loadConfig } from "./config";
-import { sinceToDate } from "./git";
+import { GitError, sinceToDate } from "./git";
 import { renderAnalysis, renderFile, renderHistory, renderHotspots, renderMarkdown } from "./report";
 import { Storage, withDeltas } from "./storage";
 import type { AnalysisResult } from "./types";
+import { ConfigError } from "./validate";
+
+const FORMATS = new Set(["text", "json", "markdown"]);
+class CliError extends Error {}
 
 const USAGE = `entropy — deterministic software-entropy analyzer (Rust + TS/JS)
 
@@ -41,6 +45,9 @@ interface Args {
   force: boolean;
 }
 
+// Throws CliError on a malformed flag instead of silently misbehaving —
+// `--limit abc` used to become `slice(0, NaN)` (empty output, no error) and
+// `--limit -5` was accepted outright.
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     command: "",
@@ -53,10 +60,21 @@ function parseArgs(argv: string[]): Args {
     const a = argv[i];
     if (a === "--repo") args.repo = resolve(argv[++i] ?? ".");
     else if (a === "--since") args.since = argv[++i];
-    else if (a === "--limit") args.limit = Number(argv[++i]);
-    else if (a === "--language") args.language = argv[++i];
-    else if (a === "--format") args.format = argv[++i] ?? "text";
-    else if (a === "--force") args.force = true;
+    else if (a === "--limit") {
+      const raw = argv[++i];
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new CliError(`--limit must be a positive integer (got "${raw}")`);
+      }
+      args.limit = n;
+    } else if (a === "--language") args.language = argv[++i];
+    else if (a === "--format") {
+      const fmt = argv[++i] ?? "text";
+      if (!FORMATS.has(fmt)) {
+        throw new CliError(`--format must be one of ${[...FORMATS].join("|")} (got "${fmt}")`);
+      }
+      args.format = fmt;
+    } else if (a === "--force") args.force = true;
     else if (a === "--help" || a === "-h") args.command ||= "help";
     else if (!args.command) args.command = a;
     else args.positional.push(a);
@@ -96,7 +114,16 @@ function analyzeWithTrend(args: Args): AnalysisResult {
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2));
+  let args: Args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    if (err instanceof CliError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
+  }
   const config = () => loadConfig(args.repo);
 
   switch (args.command) {
@@ -206,4 +233,12 @@ function main() {
   }
 }
 
-main();
+try {
+  main();
+} catch (err) {
+  if (err instanceof ConfigError || err instanceof GitError || err instanceof CliError) {
+    console.error(`Error: ${err.message}`);
+    process.exit(2);
+  }
+  throw err; // genuinely unexpected — keep the stack trace
+}

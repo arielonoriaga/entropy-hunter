@@ -86,11 +86,18 @@ export class Storage {
       "ALTER TABLE file_metrics ADD COLUMN magic_numbers INTEGER",
       "ALTER TABLE file_metrics ADD COLUMN magic_strings INTEGER",
       "ALTER TABLE file_metrics ADD COLUMN magic_score REAL",
+      "ALTER TABLE file_metrics ADD COLUMN weighted_commits REAL",
+      "ALTER TABLE file_metrics ADD COLUMN churn_trend TEXT",
+      "ALTER TABLE file_metrics ADD COLUMN why TEXT",
     ]) {
       try {
         this.db.exec(ddl);
-      } catch {
-        /* column already exists */
+      } catch (err) {
+        // SQLite has no "add column if not exists" — expect and swallow
+        // exactly that race with a prior run of this same migration list.
+        // Anything else (disk full, locked file, corrupt schema) must not
+        // be mistaken for "already migrated".
+        if (!/duplicate column name/i.test((err as Error).message)) throw err;
       }
     }
   }
@@ -177,8 +184,9 @@ export class Storage {
         boolean_fields, max_state_fields, state_score, data_clumps,
         max_clump_fields, clump_prefix, clumping_score, is_orphan,
         transitive_dependents, arch_violations, deadcode_score,
-        architecture_score, reach_score, magic_numbers, magic_strings, magic_score)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        architecture_score, reach_score, magic_numbers, magic_strings,
+        magic_score, weighted_commits, churn_trend, why)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const tx = this.db.transaction((files: FileMetrics[]) => {
       for (const f of files) {
@@ -195,6 +203,7 @@ export class Storage {
           f.is_orphan ? 1 : 0, f.transitive_dependents, f.arch_violations,
           f.deadcode_score, f.architecture_score, f.reach_score,
           f.magic_numbers, f.magic_strings, f.magic_score,
+          f.weighted_commits, f.churn_trend, f.why,
         );
       }
     });

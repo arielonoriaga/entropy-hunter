@@ -64,6 +64,24 @@ not constants of nature:
 | reach | `norm(transitive dependents as % of repo, 25)` — how much of the codebase can break when this file changes |
 | magic | `norm(magic literals per 100 LOC, 5)` — unnamed numbers in logic (0/1/2 exempt, named-constant declarations exempt) plus string literals in comparisons and case/match arms (stringly-typed logic wanting to be an enum). Density-based so big files earn no extra budget |
 | entropy index | weighted mean of the ten scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05, magic .05 — `[entropy]`) |
+
+Churn itself is recency-weighted (90-day exponential half-life, so a file
+quiet for a year doesn't outrank one actively churning this week) and
+carries a per-file `churn_trend` (`accelerating`/`stable`/`cooling`, recent-
+half vs older-half commit frequency). Merge commits are excluded
+(`--no-merges`) and author identities are unified (`--use-mailmap`) so churn
+counts authored changes, not merge noise or split committer identities.
+
+Every hotspot carries a `why` string naming its dominant raw fact (e.g.
+*"driven by churn (14 commits, 9.2 weighted, accelerating)"*) — traceable
+without cross-referencing the scoring config.
+
+**Configuration is validated, not silently ignored.** `entropy init`/every
+command that loads `config.toml` rejects unknown sections/keys, type
+mismatches, non-positive scoring caps, negative or all-zero weights, and
+malformed `[analysis] since`/`[architecture] layers`, with the offending key
+named in the error and exit code 2 — a typo like `[scorring]` or a `cap = 0`
+used to silently produce wrong scores with no signal that anything was off.
 | hotspot | weighted mean of complexity/coupling/churn (defaults .35/.35/.30 — `[hotspots]`) |
 
 Global summary scores are LOC-weighted means of per-file scores, so each

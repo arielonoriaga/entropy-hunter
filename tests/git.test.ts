@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { churn, currentCommit, isGitRepo, sinceToDate } from "../src/git";
+import { churn, currentCommit, GitError, isGitRepo, sinceToDate } from "../src/git";
 
 let repo: string;
 
@@ -58,5 +58,48 @@ describe("git churn", () => {
     const now = new Date("2026-08-07T00:00:00Z");
     expect(sinceToDate("30d", now)).toBe("2026-07-08");
     expect(sinceToDate("2026-01-01", now)).toBe("2026-01-01");
+  });
+
+  test("malformed --since fails loudly instead of silently returning empty churn", () => {
+    expect(() => sinceToDate("thirty days")).toThrow(GitError);
+    expect(() => sinceToDate("0d")).toThrow(GitError);
+    expect(() => churn(repo, "not-a-window")).toThrow(GitError);
+  });
+
+  test("a non-repo path degrades to empty churn (not a repo is a legitimate state)", () => {
+    const notARepo = mkdtempSync(join(tmpdir(), "entropy-notgit-"));
+    expect(churn(notARepo, "30d")).toEqual(new Map());
+    // but a malformed --since is still validated even for a non-repo
+    expect(() => churn(notARepo, "not-a-window")).toThrow(GitError);
+    rmSync(notARepo, { recursive: true, force: true });
+  });
+
+  test("weighted_commits decays with age; recent-only history trends accelerating", () => {
+    const recent = churn(repo, "7d").get("a.ts")!;
+    expect(recent.weighted_commits).toBeGreaterThan(0);
+    expect(recent.weighted_commits).toBeLessThanOrEqual(recent.commits);
+    expect(["accelerating", "stable", "cooling"]).toContain(recent.trend);
+  });
+
+  test("merge commits are excluded from churn (--no-merges)", () => {
+    const base = execFileSync("git", ["-C", repo, "symbolic-ref", "--short", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    sh(["checkout", "-qb", "feature"]);
+    writeFileSync(join(repo, "c.ts"), "feature file\n");
+    sh(["add", "."]);
+    sh(["commit", "-qm", "feature commit"]);
+    sh(["checkout", "-q", base]);
+    // merge --no-ff always creates a real merge commit with no diff of its own
+    execFileSync("git", ["-C", repo, "merge", "--no-ff", "-q", "-m", "merge feature", "feature"], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
+      },
+    });
+    const map = churn(repo, "2019-01-01");
+    // c.ts got exactly 1 real commit; the merge commit must not inflate it
+    expect(map.get("c.ts")!.commits).toBe(1);
   });
 });

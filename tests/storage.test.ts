@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +61,67 @@ describe("snapshot persistence", () => {
     const reopened = new Storage(db);
     expect(reopened.history().length).toBe(2);
     reopened.close();
+  });
+});
+
+describe("schema migration", () => {
+  test("opening a pre-v2 database adds every migrated column and stays usable", () => {
+    const db = join(dir, "legacy.db");
+    // The exact pre-migration shape (v1): base tables only, no ALTER'd columns.
+    const raw = new Database(db, { create: true });
+    raw.exec(`
+      CREATE TABLE snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repository TEXT NOT NULL, commit_hash TEXT NOT NULL, timestamp TEXT NOT NULL,
+        entropy REAL NOT NULL, complexity REAL NOT NULL, coupling REAL NOT NULL,
+        churn REAL NOT NULL, duplication REAL NOT NULL,
+        files_analyzed INTEGER NOT NULL, report_json TEXT NOT NULL
+      );
+      CREATE TABLE file_metrics (
+        snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+        path TEXT NOT NULL, language TEXT NOT NULL,
+        loc INTEGER, complexity_total INTEGER, complexity_average REAL,
+        complexity_max INTEGER, fan_in INTEGER, fan_out INTEGER,
+        dependency_count INTEGER, dependent_count INTEGER,
+        commits INTEGER, lines_added INTEGER, lines_deleted INTEGER,
+        duplicated_lines INTEGER, duplicated_blocks INTEGER, duplication_percentage REAL,
+        complexity_score REAL, coupling_score REAL, churn_score REAL,
+        duplication_score REAL, hotspot_score REAL, entropy_contribution REAL
+      );
+      CREATE TABLE file_cache (
+        path TEXT PRIMARY KEY, content_hash TEXT NOT NULL, fileset_hash TEXT NOT NULL,
+        base_json TEXT NOT NULL, deps_json TEXT NOT NULL
+      );
+      CREATE TABLE kv_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+    raw.close();
+
+    // Opening via Storage must run every ALTER TABLE in the migration list
+    // (not just no-op on "column already exists") and leave the DB usable.
+    const migrated = new Storage(db);
+    const cols = migrated.db
+      .query("SELECT name FROM pragma_table_info('file_metrics')")
+      .all()
+      .map((r: any) => r.name);
+    for (const col of ["state_score", "clumping_score", "deadcode_score", "magic_score", "weighted_commits", "churn_trend", "why"]) {
+      expect(cols).toContain(col);
+    }
+
+    const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, migrated, null);
+    result.repository.commit = "legacy0001";
+    const id = migrated.saveSnapshot(result);
+    const row = migrated.db
+      .query("SELECT why, weighted_commits FROM file_metrics WHERE snapshot_id = ? LIMIT 1")
+      .get(id) as { why: string; weighted_commits: number };
+    expect(typeof row.why).toBe("string");
+    expect(row.why.length).toBeGreaterThan(0);
+    migrated.close();
+  });
+
+  test("reopening an already-migrated database is idempotent (no throw on the second run)", () => {
+    const db = join(dir, "reopen.db");
+    new Storage(db).close();
+    expect(() => new Storage(db).close()).not.toThrow();
   });
 });
 
