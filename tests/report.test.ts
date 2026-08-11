@@ -37,6 +37,11 @@ describe("renderAnalysis", () => {
     if (result.cycles.length) expect(text).toContain("Circular dependencies");
     if (result.architecture_violations.length) expect(text).toContain("Architecture violations");
   });
+
+  test("includes the Semantic summary line", () => {
+    const text = renderAnalysis(result);
+    expect(text).toContain("Semantic:");
+  });
 });
 
 describe("renderHotspots", () => {
@@ -140,6 +145,13 @@ describe("renderFile", () => {
   test("an untested file says so explicitly", () => {
     const f = result.files.find((x) => x.path === "typescript/complex/logic.ts")!;
     expect(renderFile(f)).toContain("NO TEST FOUND");
+  });
+
+  test("shows the Semantic ambiguity section when nested optionality is present", () => {
+    const nested = result.files.find((f) => f.path === "rust/nested-optionality/src/lib.rs")!;
+    const text = renderFile(nested);
+    expect(text).toContain("Semantic ambiguity");
+    expect(text).toMatch(/worst depth: 2/);
   });
 });
 

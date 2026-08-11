@@ -48,6 +48,7 @@ Reach:        ${fmt(r.summary.reach)}
 Magic:        ${fmt(r.summary.magic)}
 Guard:        ${fmt(r.summary.guard)}
 Test:         ${fmt(r.summary.test)}
+Semantic:     ${fmt(r.summary.semantic)}
 
 Entropy Index: ${severity(r.summary.entropy)(fmt(r.summary.entropy))}
 P95 File Entropy: ${severity(r.summary.p95_file_entropy)(fmt(r.summary.p95_file_entropy))}
@@ -206,6 +207,15 @@ Guard clumps
 Test coverage
   ${f.has_test ? `covered (${f.test_path})` : "NO TEST FOUND"}
 
+Semantic ambiguity
+  nested Option occurrences: ${f.nested_optional_occurrences}${
+    f.max_optional_depth > 0
+      ? `\n  worst depth: ${f.max_optional_depth} (${f.max_optional_depth + 2} implicit states)${
+          f.nested_optional_pub ? " — appears in a public struct" : ""
+        }`
+      : ""
+  }
+
 Graph
   transitive dependents: ${f.transitive_dependents}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${
     f.arch_violations ? `\n  architecture violations: ${f.arch_violations} inner→outer imports` : ""
@@ -290,6 +300,7 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | Magic | ${fmt(r.summary.magic)} |
 | Guard | ${fmt(r.summary.guard)} |
 | Test | ${fmt(r.summary.test)} |
+| Semantic | ${fmt(r.summary.semantic)} |
 
 Trend: ${trendLabel(r.trend.delta)}
 
