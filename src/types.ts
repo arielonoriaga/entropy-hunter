@@ -82,6 +82,13 @@ export interface FileScores {
   why: string;
   hotspot_score: number;
   entropy_contribution: number;
+  // Same weighted-mean-of-12-signals formula as summary.entropy, but
+  // computed per file and NOT LOC-weighted — how bad this file is in
+  // isolation, so a small nasty file scores as badly as a big one.
+  entropy_score: number;
+  // entropy_score * (% of repo transitively depending on this file) — how
+  // dangerous, not just how messy: high entropy with no reach is low risk.
+  priority_score: number;
 }
 
 export type FileMetrics = FileFacts & FileScores;
@@ -100,6 +107,11 @@ export interface Summary {
   magic: number;
   guard: number;
   test: number;
+  // 95th percentile of per-file entropy_score — "how bad are the worst
+  // files", independent of the LOC-weighting that entropy_index uses.
+  p95_file_entropy: number;
+  // Count of files whose priority_score >= [priority] critical_threshold.
+  critical_hotspots: number;
 }
 
 export interface ArchViolation {
@@ -112,8 +124,9 @@ export interface ArchViolation {
 export interface AnalysisResult {
   // v2: state; v3: clumping; v4: deadcode+architecture+reach; v5: magic;
   // v6: weighted/trending churn, files_skipped, hotspot why-strings;
-  // v7: guard (shared-condition) signal; v8: test-coverage-presence signal
-  version: 8;
+  // v7: guard (shared-condition) signal; v8: test-coverage-presence signal;
+  // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary
+  version: 9;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -122,6 +135,7 @@ export interface AnalysisResult {
   summary: Summary;
   files: FileMetrics[];
   hotspots: FileMetrics[];
+  priority: FileMetrics[]; // top files by priority_score (entropy_score * reach%), capped at [hotspots] limit
   cycles: string[][];
   architecture_violations: ArchViolation[]; // capped at 100
   trend: { delta: number | null; velocity: number | null };
@@ -155,6 +169,9 @@ export interface EntropyConfig {
     coupling_weight: number;
     churn_weight: number;
   };
+  // priority_score (entropy_score * reach%) at/above this counts toward
+  // summary.critical_hotspots.
+  priority: { critical_threshold: number };
   // Normalization caps: raw value that maps to score 100 (linear, clamped).
   // Engineering heuristics, not universal constants — tune per codebase.
   scoring: {
@@ -196,6 +213,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     coupling_weight: 0.35,
     churn_weight: 0.3,
   },
+  priority: { critical_threshold: 20 },
   scoring: {
     complexity_avg_cap: 10,
     complexity_max_cap: 30,

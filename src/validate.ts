@@ -31,6 +31,12 @@ export function validateConfig(cfg: EntropyConfig): void {
     }
   }
 
+  if (!Number.isFinite(cfg.priority.critical_threshold) || cfg.priority.critical_threshold <= 0) {
+    errors.push(
+      `[priority] critical_threshold must be a number > 0 (got ${cfg.priority.critical_threshold})`,
+    );
+  }
+
   const layers = cfg.architecture.layers.split(",").map((l) => l.trim()).filter(Boolean);
   if (new Set(layers).size !== layers.length) {
     errors.push(`[architecture] layers contains duplicate names: "${cfg.architecture.layers}"`);

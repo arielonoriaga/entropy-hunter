@@ -61,6 +61,14 @@ export function normalize(value: number, cap: number): number {
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
+// Nearest-rank percentile over a copy of `values` (not mutated in place).
+function percentile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+  return sorted[Math.max(0, idx)];
+}
+
 // One sentence naming the raw fact behind whichever of the three hotspot
 // dimensions dominates — so a finding is traceable without cross-referencing
 // the scoring config, and an agent doesn't have to guess which signal fired.
@@ -393,6 +401,8 @@ export function analyzeRepo(
         magic_score * ew.magic_weight +
         guard_score * ew.guard_weight +
         test_score * ew.test_weight) / entropyWeightSum;
+    const entropy_score = round1(fileEntropy);
+    const reachFraction = f.transitive_dependents / totalFiles;
     return {
       ...f,
       complexity_score,
@@ -410,6 +420,8 @@ export function analyzeRepo(
       hotspot_score,
       why,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
+      entropy_score,
+      priority_score: round1(entropy_score * reachFraction),
     };
   });
 
@@ -432,11 +444,15 @@ export function analyzeRepo(
         guard: wmean((f) => f.guard_score),
         test: wmean((f) => f.test_score),
         entropy: 0,
+        p95_file_entropy: percentile(files.map((f) => f.entropy_score), 95),
+        critical_hotspots: files.filter(
+          (f) => f.priority_score >= config.priority.critical_threshold,
+        ).length,
       }
     : {
         complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
         clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0,
-        guard: 0, test: 0, entropy: 0,
+        guard: 0, test: 0, entropy: 0, p95_file_entropy: 0, critical_hotspots: 0,
       };
   summary.entropy = round1(
     (summary.complexity * ew.complexity_weight +
@@ -459,9 +475,12 @@ export function analyzeRepo(
   const hotspots = [...files]
     .sort((a, b) => b.hotspot_score - a.hotspot_score || a.path.localeCompare(b.path))
     .slice(0, hw.limit);
+  const priority = [...files]
+    .sort((a, b) => b.priority_score - a.priority_score || a.path.localeCompare(b.path))
+    .slice(0, hw.limit);
 
   return {
-    version: 8,
+    version: 9,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,
@@ -470,6 +489,7 @@ export function analyzeRepo(
     summary,
     files: files.sort((a, b) => a.path.localeCompare(b.path)),
     hotspots,
+    priority,
     cycles: findCycles(depGraph),
     architecture_violations,
     trend: { delta: null, velocity: null },

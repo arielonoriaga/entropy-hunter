@@ -225,19 +225,21 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 8)", () => {
-    expect(result.version).toBe(8);
+  test("JSON schema shape (version 9)", () => {
+    expect(result.version).toBe(9);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
     for (const k of [
       "entropy", "complexity", "coupling", "churn", "duplication",
       "state", "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test",
+      "p95_file_entropy", "critical_hotspots",
     ]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
     }
     expect(Array.isArray(result.files)).toBe(true);
     expect(Array.isArray(result.hotspots)).toBe(true);
+    expect(Array.isArray(result.priority)).toBe(true);
     expect(result.trend).toHaveProperty("delta");
     expect(result.trend).toHaveProperty("velocity");
     const f = result.files[0];
@@ -249,7 +251,8 @@ describe("analyzeRepo on fixtures", () => {
       "complexity_score", "coupling_score", "churn_score",
       "duplication_score", "state_score", "clumping_score", "deadcode_score",
       "architecture_score", "reach_score", "hotspot_score",
-      "entropy_contribution", "type_count", "optional_fields", "boolean_fields",
+      "entropy_contribution", "entropy_score", "priority_score",
+      "type_count", "optional_fields", "boolean_fields",
       "max_state_fields", "data_clumps", "max_clump_fields",
       "transitive_dependents", "arch_violations",
       "magic_numbers", "magic_strings", "magic_score",
@@ -260,6 +263,55 @@ describe("analyzeRepo on fixtures", () => {
     expect(["accelerating", "stable", "cooling"]).toContain(f.churn_trend);
     expect(typeof f.why).toBe("string");
     expect(Array.isArray(result.files_skipped)).toBe(true);
+  });
+
+  test("entropy_score matches the same weighted formula as summary.entropy, per file", () => {
+    const w = DEFAULT_CONFIG.entropy;
+    const keys = [
+      "complexity", "coupling", "churn", "duplication", "state",
+      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test",
+    ] as const;
+    const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
+    for (const f of result.files) {
+      const expected =
+        keys.reduce((s, k) => s + (f as any)[`${k}_score`] * (w as any)[`${k}_weight`], 0) / wsum;
+      expect(f.entropy_score).toBeCloseTo(expected, 0); // entropy_score is rounded to 1 decimal
+
+    }
+  });
+
+  test("priority_score = entropy_score * reach fraction; priority list sorted descending", () => {
+    const totalFiles = Math.max(result.files.length - 1, 1);
+    for (const f of result.files) {
+      const expected = f.entropy_score * (f.transitive_dependents / totalFiles);
+      expect(f.priority_score).toBeCloseTo(expected, 1);
+    }
+    const scores = result.priority.map((p) => p.priority_score);
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+  });
+
+  test("critical_hotspots counts files at/above the configured threshold", () => {
+    const expected = result.files.filter(
+      (f) => f.priority_score >= DEFAULT_CONFIG.priority.critical_threshold,
+    ).length;
+    expect(result.summary.critical_hotspots).toBe(expected);
+  });
+
+  test("p95_file_entropy is within the range of per-file entropy_score", () => {
+    const scores = result.files.map((f) => f.entropy_score);
+    expect(result.summary.p95_file_entropy).toBeGreaterThanOrEqual(Math.min(...scores));
+    expect(result.summary.p95_file_entropy).toBeLessThanOrEqual(Math.max(...scores));
+  });
+
+  test("p95_file_entropy is the nearest-rank 95th percentile of entropy_score (exact value, not just in-range)", () => {
+    // Independent nearest-rank implementation (README: "95th percentile of
+    // per-file entropy_score"). An off-by-one in the ceil/index math, or a
+    // floor/round swap, would still land the result within [min, max] and
+    // slip past the range-only test above, so this checks the exact pick.
+    const sorted = result.files.map((f) => f.entropy_score).sort((a, b) => a - b);
+    const rank = Math.ceil((95 / 100) * sorted.length) - 1;
+    const expected = sorted[Math.max(0, Math.min(sorted.length - 1, rank))];
+    expect(result.summary.p95_file_entropy).toBe(expected);
   });
 
   test("deterministic: analyzing twice yields identical metrics", () => {

@@ -4,9 +4,13 @@ import { resolve } from "node:path";
 import { analyzeRepo } from "./analyze";
 import { configPath, dbPath, initRepo, loadConfig } from "./config";
 import { GitError, sinceToDate } from "./git";
-import { renderAnalysis, renderFile, renderHistory, renderHotspots, renderMarkdown } from "./report";
+import {
+  renderAnalysis, renderFile, renderHealth, renderHealthMarkdown, renderHistory, renderHotspots,
+  renderMarkdown, renderPriority,
+} from "./report";
+import { computeHealth } from "./health";
 import { Storage, withDeltas } from "./storage";
-import type { AnalysisResult } from "./types";
+import type { AnalysisResult, FileMetrics } from "./types";
 import { ConfigError } from "./validate";
 
 const FORMATS = new Set(["text", "json", "markdown"]);
@@ -21,16 +25,18 @@ Commands:
   analyze                 Analyze the working tree
   snapshot                Analyze and persist a snapshot for the current commit
   history                 Show entropy across snapshots
-  hotspots                Show highest-risk files
+  hotspots                Show highest-risk files (complexity/coupling/churn)
+  priority                Show most dangerous files to refactor (entropy × reach)
+  health                  Executive summary: HEALTHY/ATTENTION bands + recommendations
   file <path>             Show metrics for one file
   report                  Full report (--format text|json|markdown)
 
 Options:
   --repo <path>           Repository to analyze (default: cwd)
   --since <window>        Churn window, e.g. 30d, 12w, 6m (default: config)
-  --limit <n>             Row limit for history/hotspots
-  --language <lang>       Filter hotspots: rust | typescript
-  --format <fmt>          Output format for report|file|hotspots: text | json | markdown
+  --limit <n>             Row limit for history/hotspots/priority
+  --language <lang>       Filter hotspots/priority: rust | typescript
+  --format <fmt>          Output format for report|file|hotspots|priority|health: text | json | markdown
   --force                 Allow duplicate snapshot for the same commit
 `;
 
@@ -113,6 +119,24 @@ function analyzeWithTrend(args: Args): AnalysisResult {
   return result;
 }
 
+// Shared by hotspots/priority: rank files by one score, filter by
+// --language, apply --limit, then render as json or the given text/markdown
+// renderer.
+function runRanked(
+  args: Args,
+  scoreOf: (f: FileMetrics) => number,
+  render: (sorted: FileMetrics[], limit: number) => string,
+  defaultLimit: number,
+) {
+  const result = analyzeWithTrend(args);
+  let pool = result.files;
+  if (args.language) pool = pool.filter((f) => f.language === args.language);
+  const sorted = [...pool].sort((a, b) => scoreOf(b) - scoreOf(a) || a.path.localeCompare(b.path));
+  const limit = args.limit ?? defaultLimit;
+  if (args.format === "json") console.log(JSON.stringify(sorted.slice(0, limit), null, 2));
+  else console.log(render(sorted, limit));
+}
+
 function main() {
   let args: Args;
   try {
@@ -138,7 +162,9 @@ function main() {
     }
 
     case "analyze": {
-      console.log(renderAnalysis(analyzeWithTrend(args)));
+      const result = analyzeWithTrend(args);
+      console.log(renderAnalysis(result));
+      console.log("\n" + renderHealth(computeHealth(result)));
       break;
     }
 
@@ -172,15 +198,21 @@ function main() {
     }
 
     case "hotspots": {
+      runRanked(args, (f) => f.hotspot_score, renderHotspots, config().hotspots.limit);
+      break;
+    }
+
+    case "priority": {
+      runRanked(args, (f) => f.priority_score, renderPriority, config().hotspots.limit);
+      break;
+    }
+
+    case "health": {
       const result = analyzeWithTrend(args);
-      let pool = result.files;
-      if (args.language) pool = pool.filter((f) => f.language === args.language);
-      const sorted = [...pool].sort(
-        (a, b) => b.hotspot_score - a.hotspot_score || a.path.localeCompare(b.path),
-      );
-      const limit = args.limit ?? config().hotspots.limit;
-      if (args.format === "json") console.log(JSON.stringify(sorted.slice(0, limit), null, 2));
-      else console.log(renderHotspots(sorted, limit));
+      const health = computeHealth(result);
+      if (args.format === "json") console.log(JSON.stringify(health, null, 2));
+      else if (args.format === "markdown") console.log(renderHealthMarkdown(health));
+      else console.log(renderHealth(health));
       break;
     }
 
@@ -208,10 +240,12 @@ function main() {
         // Stable machine-readable schema (version field inside).
         console.log(JSON.stringify(result, null, 2));
       } else if (args.format === "markdown") {
-        console.log(renderMarkdown(result));
+        console.log(renderMarkdown(result, computeHealth(result)));
       } else {
         console.log(renderAnalysis(result));
+        console.log("\n" + renderHealth(computeHealth(result)));
         console.log("\n" + renderHotspots(result.hotspots, config().hotspots.limit));
+        console.log("\n" + renderPriority(result.priority, config().hotspots.limit));
         if (existsSync(dbPath(args.repo))) {
           const storage = new Storage(dbPath(args.repo));
           const rows = withDeltas(storage.history({ limit: 10 }));

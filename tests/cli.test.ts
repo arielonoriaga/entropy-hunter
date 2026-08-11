@@ -22,7 +22,7 @@ describe("entropy CLI (end-to-end)", () => {
     const { stdout, exitCode, stderr } = await run(["report", "--repo", FIXTURES, "--format", "json"]);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
-    expect(parsed.version).toBe(8);
+    expect(parsed.version).toBe(9);
     expect(typeof parsed.summary.entropy).toBe("number");
     expect(stderr).toBe(""); // no progress noise on a non-TTY pipe
   });
@@ -75,5 +75,38 @@ describe("entropy CLI (end-to-end)", () => {
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed.length).toBeLessThanOrEqual(3);
     if (parsed.length) expect(typeof parsed[0].why).toBe("string");
+  });
+
+  test("priority --format json on a real repo returns files sorted by priority_score desc", async () => {
+    const { stdout, exitCode } = await run(["priority", "--repo", FIXTURES, "--format", "json", "--limit", "3"]);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.length).toBeLessThanOrEqual(3);
+    const scores = parsed.map((f: any) => f.priority_score);
+    expect(scores).toEqual([...scores].sort((a: number, b: number) => b - a));
+  });
+
+  test("priority (text) renders a REFACTOR PRIORITY box", async () => {
+    const { stdout, exitCode } = await run(["priority", "--repo", FIXTURES]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("REFACTOR PRIORITY");
+  });
+
+  test("health --format json on a real repo returns the four topline bands", async () => {
+    const { stdout, exitCode } = await run(["health", "--repo", FIXTURES, "--format", "json"]);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    for (const k of ["entropy", "p95", "critical", "trend"]) {
+      expect(typeof parsed[k].status).toBe("string");
+    }
+    expect(Array.isArray(parsed.attention)).toBe(true);
+    expect(Array.isArray(parsed.recommendations)).toBe(true);
+  });
+
+  test("health (text) renders REPOSITORY HEALTH", async () => {
+    const { stdout, exitCode } = await run(["health", "--repo", FIXTURES]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("REPOSITORY HEALTH");
   });
 });

@@ -43,6 +43,12 @@ describe("validateConfig", () => {
     bad.analysis.since = "thirty days";
     expect(() => validateConfig(bad)).toThrow(/since/);
   });
+
+  test("a zero/negative priority.critical_threshold is rejected", () => {
+    const bad = structuredClone(DEFAULT_CONFIG);
+    bad.priority.critical_threshold = 0;
+    expect(() => validateConfig(bad)).toThrow(/critical_threshold/);
+  });
 });
 
 describe("loadConfig rejects malformed config.toml", () => {
@@ -80,5 +86,10 @@ describe("loadConfig rejects malformed config.toml", () => {
   test("a valid override is applied", () => {
     const repo = repoWithConfig("r5-", "[hotspots]\nlimit = 5\n");
     expect(loadConfig(repo).hotspots.limit).toBe(5);
+  });
+
+  test("[priority] critical_threshold override is applied", () => {
+    const repo = repoWithConfig("r6-", "[priority]\ncritical_threshold = 40\n");
+    expect(loadConfig(repo).priority.critical_threshold).toBe(40);
   });
 });

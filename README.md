@@ -2,7 +2,8 @@
 
 Deterministic CLI that measures how a codebase changes and surfaces early signs
 of increasing software entropy. Supports **Rust** and **TypeScript/JavaScript**.
-Runs entirely locally (Bun + SQLite, zero runtime dependencies).
+Runs entirely locally (Bun + SQLite; one small runtime dependency, `picocolors`,
+for terminal color).
 
 > **The Entropy Index is an engineering heuristic, not a universal
 > measurement.** Every score is deterministically derived from raw facts
@@ -16,6 +17,13 @@ Runs entirely locally (Bun + SQLite, zero runtime dependencies).
 cd entropy-hunter && bun install && bun link   # puts `entropy` on PATH (~/.bun/bin)
 ```
 
+`bun link` symlinks this repo's `src/cli.ts` as the global `entropy` binary
+(via `bin.entropy` in `package.json`), so it stays in sync with `git pull` —
+no rebuild/reinstall step. Make sure `~/.bun/bin` is on `PATH` (bun's
+installer adds this to your shell profile automatically). Verify with
+`entropy --help` from any directory. To remove: `bun unlink` from this repo,
+or `rm ~/.bun/bin/entropy`.
+
 ## Usage
 
 ```bash
@@ -24,6 +32,8 @@ entropy init                                   # creates .entropy/{config.toml,e
 entropy analyze                                # working-tree analysis
 entropy snapshot                               # persist snapshot for current commit
 entropy hotspots --limit 20 [--language rust]
+entropy priority --limit 20 [--language rust]  # entropy x reach — dangerous, not just messy
+entropy health                                 # executive summary: bands + recommendations
 entropy history [--limit 20] [--since 90d]
 entropy file src/orders/service.rs
 entropy report --format json|markdown|text
@@ -44,6 +54,10 @@ and `--since 30d|12w|6m` to override the churn window.
    `complexity_score`, `coupling_score`, `churn_score`, `duplication_score`,
    `hotspot_score`, `entropy_index`.
 3. **Interpretation** — intentionally absent. Belongs to a future agent.
+
+**One deliberate exception:** `entropy health` runs a small, fixed,
+auditable rule table over already-computed scores — not free-form judgment.
+See [Repository Health](#repository-health) below for the exact rules.
 
 ### How scores are derived
 
@@ -88,6 +102,51 @@ used to silently produce wrong scores with no signal that anything was off.
 
 Global summary scores are LOC-weighted means of per-file scores, so each
 file's `entropy_contribution` sums to the global index.
+
+**Priority — entropy × reach.** `entropy_score` is the same weighted-mean
+formula as the global Entropy Index, but computed per file and *not*
+LOC-weighted — how bad a file is in isolation, so a small nasty file scores
+as badly as a big one. `priority_score = entropy_score * (transitive
+dependents ÷ files analyzed)` — a high-entropy file nobody depends on is low
+risk; a moderately messy file most of the codebase transitively imports is
+dangerous. `entropy priority` ranks files by `priority_score`. The summary
+carries two derived numbers alongside `entropy` (the LOC-weighted global
+index): `p95_file_entropy` (95th percentile of per-file `entropy_score` —
+"how bad are the worst files") and `critical_hotspots` (count of files with
+`priority_score` ≥ `[priority] critical_threshold`, default 20).
+
+### Repository Health
+
+`entropy health` (also folded into `analyze`/`report` text output) is an
+executive-summary view: four topline bands, an Attention list, a Structural
+list, and a Recommendation. The bands/lists are threshold classification —
+the same spirit as the existing 🔴🟠🟡🟢 severity dots. The Recommendation is
+the **one deliberate exception** to "interpretation is out of scope": a
+fixed, auditable rule table, not free-form judgment.
+
+**Topline bands:**
+
+| Metric | HEALTHY | ATTENTION | CRITICAL |
+|---|---|---|---|
+| Entropy / P95 File Entropy | < 30 | 30–69 | ≥ 70 |
+| Critical Hotspots | 0 (NONE) | 1–4 (SOME) | ≥ 5 (HIGH) |
+| Trend | STABLE or FALLING | — | RISING (delta > 0.5) |
+
+**Attention list** — any of the 12 summary signals (complexity…test) ≥ 30,
+sorted descending. **Structural list** — `cycles`/`architecture_violations`
+counts: HEALTHY at 0, ATTENTION when present (a single cycle is already
+worth knowing about, not graded).
+
+**Recommendation rule table** — each rule is a condition over `summary`/
+`cycles`; if none fire, `entropy health` says "No broad refactoring
+recommended":
+
+| Condition | Recommendation |
+|---|---|
+| `summary.churn ≥ 30` | High-churn modules |
+| `summary.reach ≥ 30 AND summary.churn ≥ 30` | High-reach, high-churn modules |
+| `cycles.length > 0` | Circular dependencies |
+| `summary.state ≥ 30` | State-heavy domain types |
 
 Complexity is a cyclomatic proxy: decision tokens (`if`/`for`/`while`/`case`/
 `catch`/`&&`/`||`/`??` for TS; `if`/`while`/`loop`/`for`/`&&`/`||`/match-arm
@@ -137,7 +196,8 @@ The CLI is agent-friendly by design:
   (stderr); piped/agent runs get pure JSON on stdout.
 - **JSON everywhere** — `report --format json` (full graph incl. per-file
   `dependencies`/`dependents`), `hotspots --format json`,
-  `file <path> --format json` (adds per-function complexity).
+  `priority --format json`, `health --format json`, `file <path> --format
+  json` (adds per-function complexity).
 - **Claude Code skill** — `skills/reduce-entropy/SKILL.md` implements a
   measure → refactor → re-measure loop. Install into a project:
 
@@ -159,7 +219,7 @@ The CLI is agent-friendly by design:
 ## Tests
 
 ```bash
-bun test   # 26 tests: complexity, deps, coupling, churn, duplication,
-           # normalization, entropy, hotspots, persistence, history,
-           # JSON schema, determinism
+bun test   # 123 tests: complexity, deps, coupling, churn, duplication,
+           # normalization, entropy, hotspots, priority, health, persistence,
+           # history, JSON schema, determinism
 ```
