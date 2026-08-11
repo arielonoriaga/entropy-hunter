@@ -40,7 +40,7 @@ export interface HealthReport {
 const SIGNAL_LABELS: Record<string, string> = {
   complexity: "Complexity", coupling: "Coupling", churn: "Churn", duplication: "Duplication",
   state: "State", clumping: "Clumping", deadcode: "Dead code", architecture: "Architecture",
-  reach: "Reach", magic: "Magic", guard: "Guard", test: "Test",
+  reach: "Reach", magic: "Magic", guard: "Guard", test: "Test", semantic: "Semantic",
 };
 
 // Same 30/70 split used for per-file severity elsewhere, collapsed to the
@@ -75,7 +75,7 @@ export function computeHealth(r: AnalysisResult): HealthReport {
 
   const signalKeys = [
     "complexity", "coupling", "churn", "duplication", "state", "clumping",
-    "deadcode", "architecture", "reach", "magic", "guard", "test",
+    "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
   ] as const;
   const attention: SignalLine[] = signalKeys
     .map((k) => ({ key: k, score: summary[k] }))
