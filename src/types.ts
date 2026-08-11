@@ -52,6 +52,13 @@ export interface FileFacts {
   // test (or, for Rust, an inline #[cfg(test)] module)?
   has_test: boolean;
   test_path: string; // companion path, "(inline)" for Rust, "" if none
+  // Nested optionality (Option<Option<T>>, deeper): each layer beyond the
+  // first hides an additional implicit state a caller must distinguish.
+  // Rust struct fields only (see design doc); TypeScript/generic analyzers
+  // report 0/false.
+  max_optional_depth: number; // worst single field's depth in this file (0 = none nested)
+  nested_optional_occurrences: number; // count of nested-Option regex matches across the file
+  nested_optional_pub: boolean; // does ANY pub struct in this file have depth >= 1?
   // Graph-derived (recomputed each run, not content-cached):
   // Magic literals: unnamed numbers in logic, strings in comparisons/arms.
   magic_numbers: number;
@@ -77,6 +84,7 @@ export interface FileScores {
   // 0 if tested or trivial (no complexity to protect); otherwise scales
   // with how much untested complexity/logic this file exposes.
   test_score: number;
+  semantic_score: number;
   // One sentence naming the dominant raw fact behind hotspot_score, so an
   // agent (or human) doesn't have to reverse-engineer which signal fired.
   why: string;
@@ -107,6 +115,7 @@ export interface Summary {
   magic: number;
   guard: number;
   test: number;
+  semantic: number;
   // 95th percentile of per-file entropy_score — "how bad are the worst
   // files", independent of the LOC-weighting that entropy_index uses.
   p95_file_entropy: number;
@@ -125,8 +134,9 @@ export interface AnalysisResult {
   // v2: state; v3: clumping; v4: deadcode+architecture+reach; v5: magic;
   // v6: weighted/trending churn, files_skipped, hotspot why-strings;
   // v7: guard (shared-condition) signal; v8: test-coverage-presence signal;
-  // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary
-  version: 9;
+  // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary;
+  // v10: semantic (nested-optionality) signal
+  version: 10;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -157,6 +167,7 @@ export interface EntropyConfig {
     magic_weight: number;
     guard_weight: number;
     test_weight: number;
+    semantic_weight: number;
   };
   analysis: { since: string };
   // Layer names inner→outer, matched against path segments. A file in an
@@ -187,6 +198,8 @@ export interface EntropyConfig {
     magic_per_100loc_cap: number; // magic literals per 100 LOC scoring 100 (density, not raw count)
     guard_group_cap: number; // sibling ifs in ONE shared-guard group scoring 100
     test_complexity_cap: number; // complexity_total of an untested file scoring 100
+    semantic_depth_cap: number; // max_optional_depth in ONE file scoring 100
+    semantic_frequency_cap: number; // nested_optional_occurrences in ONE file scoring 100
   };
 }
 
@@ -204,6 +217,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     magic_weight: 0.05,
     guard_weight: 0.05,
     test_weight: 0.1,
+    semantic_weight: 0.05,
   },
   analysis: { since: "30d" },
   architecture: { layers: "domain, application, infrastructure, api" },
@@ -227,5 +241,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     magic_per_100loc_cap: 5,
     guard_group_cap: 4,
     test_complexity_cap: 20,
+    semantic_depth_cap: 3,
+    semantic_frequency_cap: 8,
   },
 };

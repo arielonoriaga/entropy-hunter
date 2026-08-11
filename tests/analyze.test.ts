@@ -60,10 +60,10 @@ describe("analyzeRepo on fixtures", () => {
   const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
   test("finds dedicated and generic-fallback languages", () => {
-    expect(result.files_by_language.rust).toBe(10);
+    expect(result.files_by_language.rust).toBe(11);
     expect(result.files_by_language.typescript).toBe(13);
     expect(result.files_by_language.python).toBe(2); // generic fallback
-    expect(result.files_analyzed).toBe(25);
+    expect(result.files_analyzed).toBe(26);
   });
 
   test("test signal: tested files score 0, untested-with-complexity files don't", () => {
@@ -172,6 +172,19 @@ describe("analyzeRepo on fixtures", () => {
     expect(clean.clumping_score).toBe(0);
   });
 
+  test("semantic signal: nested Option depth/occurrences/pub detected and scored", () => {
+    const nested = result.files.find((f) => f.path === "rust/nested-optionality/src/lib.rs")!;
+    expect(nested.max_optional_depth).toBe(2); // InternalCache: Option<Option<Option<u64>>>
+    expect(nested.nested_optional_occurrences).toBe(2); // UpdateUser.name + InternalCache.entry
+    expect(nested.nested_optional_pub).toBe(true); // UpdateUser is pub with depth 1
+    expect(nested.semantic_score).toBeGreaterThan(0);
+    const clean = result.files.find((f) => f.path === "rust/simple/src/lib.rs")!;
+    expect(clean.max_optional_depth).toBe(0);
+    expect(clean.nested_optional_occurrences).toBe(0);
+    expect(clean.nested_optional_pub).toBe(false);
+    expect(clean.semantic_score).toBe(0);
+  });
+
   test("coupling: fan_in/fan_out are consistent", () => {
     const shared = result.files.find((f) => f.path === "rust/coupled/src/shared.rs")!;
     expect(shared.fan_in).toBe(3); // main, orders, payments
@@ -196,7 +209,7 @@ describe("analyzeRepo on fixtures", () => {
     const w = DEFAULT_CONFIG.entropy;
     const keys = [
       "complexity", "coupling", "churn", "duplication", "state",
-      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test",
+      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
     ] as const;
     const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     const expected =
@@ -225,14 +238,14 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 9)", () => {
-    expect(result.version).toBe(9);
+  test("JSON schema shape (version 10)", () => {
+    expect(result.version).toBe(10);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
     for (const k of [
       "entropy", "complexity", "coupling", "churn", "duplication",
-      "state", "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test",
+      "state", "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
       "p95_file_entropy", "critical_hotspots",
     ]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
@@ -257,10 +270,12 @@ describe("analyzeRepo on fixtures", () => {
       "transitive_dependents", "arch_violations",
       "magic_numbers", "magic_strings", "magic_score",
       "guard_clumps", "max_guard_group", "guard_score", "test_score",
+      "max_optional_depth", "nested_optional_occurrences", "semantic_score",
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }
     expect(["accelerating", "stable", "cooling"]).toContain(f.churn_trend);
+    expect(typeof f.nested_optional_pub).toBe("boolean");
     expect(typeof f.why).toBe("string");
     expect(Array.isArray(result.files_skipped)).toBe(true);
   });
@@ -269,7 +284,7 @@ describe("analyzeRepo on fixtures", () => {
     const w = DEFAULT_CONFIG.entropy;
     const keys = [
       "complexity", "coupling", "churn", "duplication", "state",
-      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test",
+      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
     ] as const;
     const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     for (const f of result.files) {

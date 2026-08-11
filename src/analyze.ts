@@ -95,6 +95,7 @@ interface CachedBase {
   st: {
     types: number; optional: number; boolean: number; max: number;
     clumps: number; maxClump: number; clumpPrefix: string;
+    maxOptionalDepth: number; nestedOccurrences: number; nestedPub: boolean;
   };
   mg: { numbers: number; strings: number };
   gd: { groups: number; max: number; prefix: string };
@@ -102,7 +103,7 @@ interface CachedBase {
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v8"; // v8: test-coverage-presence signal (deps_json now bundles {deps, tc})
+const CACHE_VERSION = "v9"; // v9: semantic (nested-optionality) signal (base.st gains depth/occurrences/pub)
 
 export type ProgressFn = (message: string) => void;
 
@@ -185,6 +186,9 @@ export function analyzeRepo(
             (best, t) => (t.clump_fields > best.clump_fields ? t : best),
             { clump_fields: 0, clump_prefix: "" },
           ).clump_prefix,
+          maxOptionalDepth: types.reduce((s, t) => Math.max(s, t.max_optional_depth), 0),
+          nestedOccurrences: types.reduce((s, t) => s + t.nested_optional_occurrences, 0),
+          nestedPub: types.some((t) => t.is_pub && t.max_optional_depth >= 1),
         },
         mg: analyzer.magic(src),
         gd: (() => {
@@ -255,6 +259,9 @@ export function analyzeRepo(
       guard_prefix: base.gd.prefix,
       has_test: tc.has_test,
       test_path: tc.test_path,
+      max_optional_depth: base.st.maxOptionalDepth,
+      nested_optional_occurrences: base.st.nestedOccurrences,
+      nested_optional_pub: base.st.nestedPub,
       is_entrypoint: isEntrypoint(path),
       is_orphan: false,
       transitive_dependents: 0,
@@ -332,7 +339,7 @@ export function analyzeRepo(
     ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
       ew.duplication_weight + ew.state_weight + ew.clumping_weight +
       ew.deadcode_weight + ew.architecture_weight + ew.reach_weight +
-      ew.magic_weight + ew.guard_weight + ew.test_weight || 1;
+      ew.magic_weight + ew.guard_weight + ew.test_weight + ew.semantic_weight || 1;
   const totalFiles = Math.max(facts.size - 1, 1);
   const hotspotWeightSum =
     hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
@@ -382,6 +389,18 @@ export function analyzeRepo(
     const test_score = f.has_test || f.is_entrypoint
       ? 0
       : round1(normalize(f.complexity_total, s.test_complexity_cap));
+    // Additive blend, not multiplicative: a post-blend multiplier either
+    // vanishes once depth+frequency alone clamp near 100, or over-punishes
+    // a single legitimate public PATCH-style field at the low end. See
+    // design doc for the worked examples this formula is tuned against.
+    const semantic_score = round1(
+      Math.min(
+        100,
+        0.55 * normalize(f.max_optional_depth, s.semantic_depth_cap) +
+          0.3 * normalize(f.nested_optional_occurrences, s.semantic_frequency_cap) +
+          0.15 * (f.nested_optional_pub ? 100 : 0),
+      ),
+    );
     const hotspot_score = round1(
       (complexity_score * hw.complexity_weight +
         coupling_score * hw.coupling_weight +
@@ -400,7 +419,8 @@ export function analyzeRepo(
         reach_score * ew.reach_weight +
         magic_score * ew.magic_weight +
         guard_score * ew.guard_weight +
-        test_score * ew.test_weight) / entropyWeightSum;
+        test_score * ew.test_weight +
+        semantic_score * ew.semantic_weight) / entropyWeightSum;
     const entropy_score = round1(fileEntropy);
     const reachFraction = f.transitive_dependents / totalFiles;
     return {
@@ -417,6 +437,7 @@ export function analyzeRepo(
       magic_score,
       guard_score,
       test_score,
+      semantic_score,
       hotspot_score,
       why,
       entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
@@ -443,6 +464,7 @@ export function analyzeRepo(
         magic: wmean((f) => f.magic_score),
         guard: wmean((f) => f.guard_score),
         test: wmean((f) => f.test_score),
+        semantic: wmean((f) => f.semantic_score),
         entropy: 0,
         p95_file_entropy: percentile(files.map((f) => f.entropy_score), 95),
         critical_hotspots: files.filter(
@@ -452,7 +474,7 @@ export function analyzeRepo(
     : {
         complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
         clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0,
-        guard: 0, test: 0, entropy: 0, p95_file_entropy: 0, critical_hotspots: 0,
+        guard: 0, test: 0, semantic: 0, entropy: 0, p95_file_entropy: 0, critical_hotspots: 0,
       };
   summary.entropy = round1(
     (summary.complexity * ew.complexity_weight +
@@ -466,7 +488,8 @@ export function analyzeRepo(
       summary.reach * ew.reach_weight +
       summary.magic * ew.magic_weight +
       summary.guard * ew.guard_weight +
-      summary.test * ew.test_weight) / entropyWeightSum,
+      summary.test * ew.test_weight +
+      summary.semantic * ew.semantic_weight) / entropyWeightSum,
   );
 
   const byLanguage: Record<string, number> = {};
@@ -480,7 +503,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 9,
+    version: 10,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,
