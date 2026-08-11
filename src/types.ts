@@ -90,7 +90,7 @@ export interface FileScores {
   why: string;
   hotspot_score: number;
   entropy_contribution: number;
-  // Same weighted-mean-of-12-signals formula as summary.entropy, but
+  // Same weighted-mean-of-13-signals formula as summary.entropy, but
   // computed per file and NOT LOC-weighted — how bad this file is in
   // isolation, so a small nasty file scores as badly as a big one.
   entropy_score: number;

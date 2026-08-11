@@ -168,9 +168,17 @@ same mechanism every other signal already uses. No special cross-term.
 
 ## Validation
 
-After implementation, run `entropy analyze` against
-`/home/ariel/Projects/Personal/ez-stock/backend` (a real Rust codebase
-already confirmed to contain `Option<Option<...>>` usage in
-`shared/patch.rs`, `contexts/purchases/domain.rs`, and others) as a
-real-world sanity check that the signal fires where expected and doesn't
-false-positive elsewhere.
+After implementation, ran `entropy analyze` against
+`/home/ariel/Projects/Personal/ez-stock/backend` (a real Rust codebase) as a
+real-world sanity check. It found 13-14 files with genuine struct-field
+nested-Option usage, all correctly classified by pub/private and occurrence
+count, with zero false positives and zero unexpected false negatives.
+
+An earlier naive grep had also flagged `shared/patch.rs` and
+`contexts/purchases/domain.rs` as `Option<Option<...>>` occurrences, but
+neither actually belongs in the detector's output: `patch.rs`'s only
+occurrence sits inside a `//!` doc comment (comments are stripped before
+detection), and `domain.rs`'s two occurrences are both function parameters
+on a trait method, not struct fields (v1 is struct-fields-only; function
+parameters are explicitly out of scope, see Scope above). Both were
+correctly excluded by the detector — these aren't misses to chase.

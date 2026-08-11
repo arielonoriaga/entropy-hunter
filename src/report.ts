@@ -210,11 +210,9 @@ Test coverage
 Semantic ambiguity
   nested Option occurrences: ${f.nested_optional_occurrences}${
     f.max_optional_depth > 0
-      ? `\n  worst depth: ${f.max_optional_depth} (${f.max_optional_depth + 2} implicit states)${
-          f.nested_optional_pub ? " — appears in a public struct" : ""
-        }`
+      ? `\n  worst depth: ${f.max_optional_depth} (${f.max_optional_depth + 2} implicit states)`
       : ""
-  }
+  }${f.nested_optional_pub ? "\n  nested optionality also appears in a public struct" : ""}
 
 Graph
   transitive dependents: ${f.transitive_dependents}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${

@@ -153,6 +153,18 @@ describe("renderFile", () => {
     expect(text).toContain("Semantic ambiguity");
     expect(text).toMatch(/worst depth: 2/);
   });
+
+  test("public-struct note is independent of worst depth: fixture's worst depth (2) is a PRIVATE struct (InternalCache), while a DIFFERENT, shallower struct (UpdateUser, depth 1) is public — the note must not be attached to the worst-depth line as if the depth-2 field itself were public", () => {
+    const nested = result.files.find((f) => f.path === "rust/nested-optionality/src/lib.rs")!;
+    expect(nested.max_optional_depth).toBe(2);
+    expect(nested.nested_optional_pub).toBe(true);
+    const text = renderFile(nested);
+    // "worst depth" line must not carry the public-struct suffix.
+    const worstDepthLine = text.split("\n").find((l) => l.includes("worst depth"))!;
+    expect(worstDepthLine).not.toContain("public");
+    // The public-struct note appears as its own line elsewhere in the section.
+    expect(text).toContain("nested optionality also appears in a public struct");
+  });
 });
 
 describe("renderMarkdown", () => {
