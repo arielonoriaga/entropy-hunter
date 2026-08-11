@@ -62,6 +62,23 @@ describe("snapshot persistence", () => {
     expect(reopened.history().length).toBe(2);
     reopened.close();
   });
+
+  test("semantic signal columns survive a save/reload round-trip", () => {
+    const db = new Storage(join(dir, "semantic.db"));
+    const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
+    const id = db.saveSnapshot(result);
+    const row = db.db
+      .query("SELECT max_optional_depth, nested_optional_occurrences, nested_optional_pub, semantic_score FROM file_metrics WHERE snapshot_id = ? AND path = ?")
+      .get(id, "rust/nested-optionality/src/lib.rs") as {
+        max_optional_depth: number; nested_optional_occurrences: number;
+        nested_optional_pub: number; semantic_score: number;
+      };
+    expect(row.max_optional_depth).toBe(2);
+    expect(row.nested_optional_occurrences).toBe(2);
+    expect(row.nested_optional_pub).toBe(1); // SQLite stores booleans as 0/1
+    expect(row.semantic_score).toBeGreaterThan(0);
+    db.close();
+  });
 });
 
 describe("schema migration", () => {

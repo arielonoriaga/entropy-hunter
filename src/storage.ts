@@ -47,7 +47,9 @@ export class Storage {
         duplicated_lines INTEGER, duplicated_blocks INTEGER,
         duplication_percentage REAL,
         complexity_score REAL, coupling_score REAL, churn_score REAL,
-        duplication_score REAL, hotspot_score REAL, entropy_contribution REAL
+        duplication_score REAL, hotspot_score REAL, entropy_contribution REAL,
+        max_optional_depth INTEGER, nested_optional_occurrences INTEGER,
+        nested_optional_pub INTEGER, semantic_score REAL
       );
       CREATE INDEX IF NOT EXISTS idx_fm_snapshot ON file_metrics(snapshot_id);
       CREATE INDEX IF NOT EXISTS idx_fm_path ON file_metrics(path);
@@ -98,6 +100,11 @@ export class Storage {
       "ALTER TABLE file_metrics ADD COLUMN has_test INTEGER",
       "ALTER TABLE file_metrics ADD COLUMN test_path TEXT",
       "ALTER TABLE file_metrics ADD COLUMN test_score REAL",
+      "ALTER TABLE snapshots ADD COLUMN semantic REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE file_metrics ADD COLUMN max_optional_depth INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN nested_optional_occurrences INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN nested_optional_pub INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN semantic_score REAL",
     ]) {
       try {
         this.db.exec(ddl);
@@ -162,8 +169,8 @@ export class Storage {
     const insert = this.db.query(`
       INSERT INTO snapshots (repository, commit_hash, timestamp, entropy,
         complexity, coupling, churn, duplication, state, clumping, deadcode,
-        architecture, reach, magic, guard, test, files_analyzed, report_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        architecture, reach, magic, guard, test, semantic, files_analyzed, report_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
     `);
     const { summary: s } = result;
@@ -178,7 +185,7 @@ export class Storage {
       result.repository.name, result.repository.commit, result.timestamp,
       s.entropy, s.complexity, s.coupling, s.churn, s.duplication, s.state,
       s.clumping, s.deadcode, s.architecture, s.reach, s.magic, s.guard, s.test,
-      result.files_analyzed, JSON.stringify(slim),
+      s.semantic, result.files_analyzed, JSON.stringify(slim),
     ) as { id: number };
 
     // Named columns: migrated DBs append new columns at the end, so
@@ -195,8 +202,9 @@ export class Storage {
         transitive_dependents, arch_violations, deadcode_score,
         architecture_score, reach_score, magic_numbers, magic_strings,
         magic_score, weighted_commits, churn_trend, why, guard_clumps,
-        max_guard_group, guard_prefix, guard_score, has_test, test_path, test_score)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        max_guard_group, guard_prefix, guard_score, has_test, test_path, test_score,
+        max_optional_depth, nested_optional_occurrences, nested_optional_pub, semantic_score)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const tx = this.db.transaction((files: FileMetrics[]) => {
       for (const f of files) {
@@ -216,6 +224,8 @@ export class Storage {
           f.weighted_commits, f.churn_trend, f.why,
           f.guard_clumps, f.max_guard_group, f.guard_prefix, f.guard_score,
           f.has_test ? 1 : 0, f.test_path, f.test_score,
+          f.max_optional_depth, f.nested_optional_occurrences,
+          f.nested_optional_pub ? 1 : 0, f.semantic_score,
         );
       }
     });
