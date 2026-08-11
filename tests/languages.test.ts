@@ -123,6 +123,69 @@ describe("state-space and clump extraction", () => {
       "pub struct S { pub is_open: bool, pub is_done: bool, pub is_new: bool, pub user_id: u64, pub user_name: String }";
     expect(rustAnalyzer.stateSpace(src)[0]).toMatchObject({ clump_fields: 0, clump_prefix: "" });
   });
+
+  describe("nested optionality detection", () => {
+    test("rust: Option<T> alone is depth 0 (exempt)", () => {
+      const types = rustAnalyzer.stateSpace("pub struct P { pub name: Option<String> }");
+      expect(types[0]).toMatchObject({ max_optional_depth: 0, nested_optional_occurrences: 0 });
+    });
+
+    test("rust: Option<Option<T>> is depth 1", () => {
+      const types = rustAnalyzer.stateSpace("struct P { name: Option<Option<String>> }");
+      expect(types[0]).toMatchObject({ max_optional_depth: 1, nested_optional_occurrences: 1 });
+    });
+
+    test("rust: Option<Option<Option<T>>> is depth 2", () => {
+      const types = rustAnalyzer.stateSpace("struct P { name: Option<Option<Option<String>>> }");
+      expect(types[0]).toMatchObject({ max_optional_depth: 2, nested_optional_occurrences: 1 });
+    });
+
+    test("rust: Option<Result<T, E>> and Result<Option<T>, E> and Vec<Option<T>> are NOT nested-Option", () => {
+      const src = `
+        struct A { a: Option<Result<String, u32>> }
+        struct B { b: Result<Option<String>, u32> }
+        struct C { c: Vec<Option<String>> }
+      `;
+      const types = rustAnalyzer.stateSpace(src);
+      for (const t of types) {
+        expect(t.max_optional_depth).toBe(0);
+        expect(t.nested_optional_occurrences).toBe(0);
+      }
+    });
+
+    test("rust: explicit enum state modeling is not flagged (enums are never scanned)", () => {
+      const src = `
+        enum FieldUpdate<T> {
+          Unchanged,
+          Clear,
+          Set(T),
+        }
+      `;
+      const types = rustAnalyzer.stateSpace(src);
+      expect(types).toEqual([]);
+    });
+
+    test("rust: a composite field with two independent nested-Option occurrences counts as 2", () => {
+      const src = "struct M { m: HashMap<Option<Option<u32>>, Option<Option<String>>> }";
+      const types = rustAnalyzer.stateSpace(src);
+      expect(types[0]).toMatchObject({ max_optional_depth: 1, nested_optional_occurrences: 2 });
+    });
+
+    test("rust: pub struct is public, pub(crate) struct is not", () => {
+      const src = `
+        pub struct Public { pub name: Option<Option<String>> }
+        pub(crate) struct Internal { pub name: Option<Option<String>> }
+      `;
+      const types = rustAnalyzer.stateSpace(src);
+      expect(types[0]).toMatchObject({ name: "Public", max_optional_depth: 1, is_pub: true });
+      expect(types[1]).toMatchObject({ name: "Internal", max_optional_depth: 1, is_pub: false });
+    });
+
+    test("rust: tuple structs are not scanned (existing struct-header regex already excludes them)", () => {
+      const types = rustAnalyzer.stateSpace("pub struct Patch(Option<Option<String>>);");
+      expect(types).toEqual([]);
+    });
+  });
 });
 
 describe("magic literals", () => {

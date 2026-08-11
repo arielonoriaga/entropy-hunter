@@ -148,6 +148,9 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
         boolean_fields: (body.match(/:\s*boolean\b/g) ?? []).length,
         clump_fields: clump.fields,
         clump_prefix: clump.prefix,
+        max_optional_depth: 0,
+        nested_optional_occurrences: 0,
+        is_pub: false,
       };
     });
   },

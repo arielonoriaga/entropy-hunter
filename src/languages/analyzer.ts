@@ -23,6 +23,14 @@ export interface TypeState {
   boolean_fields: number;
   clump_fields: number; // size of the largest same-prefix field group (0 if < MIN_CLUMP)
   clump_prefix: string; // that group's prefix ("" if none)
+  // Nested optionality (Option<Option<T>>, deeper): each layer beyond the
+  // first hides an additional implicit state. depth 0 = plain Option<T>,
+  // exempt (matches semantic_states = depth + 2 from the design doc).
+  max_optional_depth: number; // worst field in this type
+  nested_optional_occurrences: number; // count of nested-Option regex
+  // matches in this type's body — NOT distinct fields: a single field of
+  // type HashMap<Option<Option<K>>, Option<Option<V>>> counts as 2.
+  is_pub: boolean; // is this type's declaration `pub` (public API surface)?
 }
 
 const MIN_CLUMP = 3; // 2 shared prefixes can be coincidence; 3 is a pattern

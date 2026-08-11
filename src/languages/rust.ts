@@ -10,6 +10,13 @@ const FN_HEADER = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/g;
 // `match` itself is not counted (its arms are, via =>).
 const DECISION = /\b(?:if|while|loop|for)\b|&&|\|\||=>/g;
 
+// Contiguous "Option<Option<...Option<" runs — a run's Option-count minus 1
+// is its nesting depth beyond the first (unremarkable) layer.
+const NESTED_OPTION = /Option\s*<\s*Option\s*<(?:\s*Option\s*<)*/g;
+// Public API surface: `pub struct Name` only — pub(crate)/pub(super) are
+// crate-internal, not public API, and must NOT match here.
+const PUB_STRUCT = /\bpub\s+struct\s+([A-Za-z_]\w*)/g;
+
 const STD_CRATES = new Set(["std", "core", "alloc"]);
 
 // The engine calls complexity/dependencies/normalizedLines back-to-back on
@@ -129,18 +136,28 @@ export const rustAnalyzer: LanguageAnalyzer = {
   },
 
   stateSpace(source) {
+    const src = stripped(source);
+    const pubStructs = new Set([...src.matchAll(PUB_STRUCT)].map((m) => m[1]));
     // Struct fields only; enums are the fix, not the smell.
     return extractBraceBlocks(
-      stripped(source),
+      src,
       /\bstruct\s+([A-Za-z_]\w*)[^{;(]*\{/g,
     ).map(({ name, body }) => {
       const clump = largestPrefixClump(fieldNames(body));
+      const nestedMatches = [...body.matchAll(NESTED_OPTION)];
+      const maxDepth = nestedMatches.reduce(
+        (best, m) => Math.max(best, (m[0].match(/Option/g)!.length) - 1),
+        0,
+      );
       return {
         name,
         optional_fields: (body.match(/:\s*Option\s*</g) ?? []).length,
         boolean_fields: (body.match(/:\s*bool\b/g) ?? []).length,
         clump_fields: clump.fields,
         clump_prefix: clump.prefix,
+        max_optional_depth: maxDepth,
+        nested_optional_occurrences: nestedMatches.length,
+        is_pub: pubStructs.has(name),
       };
     });
   },
