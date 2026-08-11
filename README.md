@@ -79,7 +79,8 @@ not constants of nature:
 | magic | `norm(magic literals per 100 LOC, 5)` — unnamed numbers in logic (0/1/2 exempt, named-constant declarations exempt) plus string literals in comparisons and case/match arms (stringly-typed logic wanting to be an enum). Density-based so big files earn no extra budget |
 | guard | `norm(worst shared-guard group, 4)` — sibling `if`s at the same indent sharing a leading `&&` conjunct (`if (isLoggedIn() && a())` next to `if (isLoggedIn() && b())`): the guard is re-checked N times instead of once with nested/early-return branches inside ("Consolidate Conditional Expression") |
 | test | 0 if tested (or an entrypoint, or has no functions to protect), else `norm(complexity_total, 20)` — untested complexity is worse than untested trivia. Presence, not quality: Rust's inline `#[cfg(test)]`, TS/Go/Python companion-file conventions, or a transitive fallback (does ANY file that eventually imports this one turn out to be a test?) |
-| entropy index | weighted mean of the twelve scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05, magic .05, guard .05, test .10 — `[entropy]`) |
+| semantic | `0.55·norm(max_optional_depth, 3) + 0.30·norm(nested_optional_occurrences, 8) + 0.15·(any pub struct nested? 100 : 0)` — Rust `Option<Option<T>>` (and deeper) struct fields. Not automatically bad: a `pub struct UpdateUser { name: Option<Option<String>> }` can be a legitimate PATCH tri-state (`None`=don't touch, `Some(None)`=clear, `Some(Some(v))`=set) — the signal surfaces where nesting concentrates (deep, frequent, public) rather than flagging any single occurrence as wrong. Explicit state enums (`enum FieldUpdate<T> { Unchanged, Clear, Set(T) }`) are exempt — only `struct` bodies are scanned |
+| entropy index | weighted mean of the thirteen scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05, magic .05, guard .05, test .10, semantic .05 — `[entropy]`) |
 
 Churn itself is recency-weighted (90-day exponential half-life, so a file
 quiet for a year doesn't outrank one actively churning this week) and
@@ -132,7 +133,7 @@ fixed, auditable rule table, not free-form judgment.
 | Critical Hotspots | 0 (NONE) | 1–4 (SOME) | ≥ 5 (HIGH) |
 | Trend | STABLE or FALLING | — | RISING (delta > 0.5) |
 
-**Attention list** — any of the 12 summary signals (complexity…test) ≥ 30,
+**Attention list** — any of the 13 summary signals (complexity…semantic) ≥ 30,
 sorted descending. **Structural list** — `cycles`/`architecture_violations`
 counts: HEALTHY at 0, ATTENTION when present (a single cycle is already
 worth knowing about, not graded).
