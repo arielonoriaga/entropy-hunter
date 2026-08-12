@@ -103,7 +103,7 @@ interface CachedBase {
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v9"; // v9: semantic (nested-optionality) signal (base.st gains depth/occurrences/pub)
+const CACHE_VERSION = "v11"; // v11: TS FN_HEADER recognizes a const wrapped in a single hook call (createMemo/useMemo/...), incl. explicit generic type args
 
 export type ProgressFn = (message: string) => void;
 

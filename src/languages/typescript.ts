@@ -18,7 +18,12 @@ const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"
 const FN_HEADER = new RegExp(
   [
     /\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/.source,
-    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)/.source,
+    // The RHS may be wrapped in a single hook/HOC call — `createMemo(() => {`,
+    // `useMemo(() => {`, `on(dep, () => {`, `createMemo<T>(() => {` — so a
+    // sibling memo/effect gets its own header instead of donating its decision
+    // points to whatever real function preceded it (see the "wrapped in a
+    // single hook call" / "generic type arguments" regressions).
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:[A-Za-z_$][\w$]*(?:<[^>]*>)?\(\s*)?(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)/.source,
     /^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|get\s+|set\s+|override\s+)*(?!(?:if|for|while|switch|catch|return|else|do|try|function|new|typeof|await|yield)\b)([A-Za-z_$][\w$]*)\s*\([^;=]*\)\s*(?::\s*[^{;=]+)?\{\s*$/.source,
   ].join("|"),
   "gm",

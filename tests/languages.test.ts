@@ -91,6 +91,54 @@ describe("typescript complexity", () => {
     expect(byName.outer).toBe(3); // 2 ifs, correctly attributed, not <module>
     expect(byName["<module>"]).toBeUndefined();
   });
+
+  test("a const wrapped in a single hook call (createMemo/useMemo/useCallback) is its own header", () => {
+    // Regression: `const x = createMemo(() => {...})` wasn't recognized as a
+    // function header (the arrow isn't the direct RHS of `=`), so every
+    // decision token inside it — and inside every sibling memo/effect that
+    // followed — was silently attributed to whatever real function preceded
+    // them. Found via two real files: CheckoutPanel.tsx's `banner` (reported
+    // complexity 53 for a 4-branch if-chain) and ProductDetail.tsx's
+    // `isFlavorProduct` (reported 39 for a one-line boolean check) — both
+    // false positives caused by sibling `createMemo` consts leaking into them.
+    const src = `function Component() {
+  const trivial = () => true;
+  const total = createMemo(() => {
+    if (a) return 1;
+    if (b) return 2;
+    return 0;
+  });
+  const label = useMemo(() => {
+    return cond ? "x" : "y";
+  }, [cond]);
+  return null;
+}`;
+    const cx = typescriptAnalyzer.complexity(src);
+    const byName = Object.fromEntries(cx.functions.map((f) => [f.name, f.complexity]));
+    expect(byName.trivial).toBe(1); // no decision tokens of its own
+    expect(byName.total).toBe(3); // 2 ifs, attributed to itself, not `trivial`
+    expect(byName.label).toBe(1); // ternary via `?` — no DECISION token match, but must not leak into `total`
+    expect(byName.Component).toBe(1); // no decision tokens of its own
+  });
+
+  test("the wrapping hook call may carry explicit generic type arguments", () => {
+    // Regression: `createMemo<number | null>(() => {...})` — found in
+    // ProductDetail.tsx's `maxQty`/`lowStockHint` — wasn't recognized because
+    // `<...>` sits between the hook name and its `(`.
+    const src = `function Component() {
+  const maxQty = createMemo<number | null>(() => {
+    if (a) return 1;
+    if (b) return 2;
+    return null;
+  });
+  const other = () => true;
+  return null;
+}`;
+    const cx = typescriptAnalyzer.complexity(src);
+    const byName = Object.fromEntries(cx.functions.map((f) => [f.name, f.complexity]));
+    expect(byName.maxQty).toBe(3); // 2 ifs, attributed to itself
+    expect(byName.other).toBe(1); // not leaked into by maxQty's neighbor
+  });
 });
 
 describe("state-space and clump extraction", () => {
