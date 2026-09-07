@@ -8,6 +8,7 @@
   },
   "scripts": {
     "entropy": "bun src/cli.ts",
+    "build:dist": "bun build --compile src/cli.ts --outfile dist/entropy",
     "test": "bun test"
   },
   "devDependencies": {
