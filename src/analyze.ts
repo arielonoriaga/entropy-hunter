@@ -103,7 +103,7 @@ interface CachedBase {
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v11"; // v11: TS FN_HEADER recognizes a const wrapped in a single hook call (createMemo/useMemo/...), incl. explicit generic type args
+const CACHE_VERSION = "v12"; // v12: count repeated visible JSX text in the magic-string signal
 
 export type ProgressFn = (message: string) => void;
 
@@ -503,7 +503,7 @@ export function analyzeRepo(
     .slice(0, hw.limit);
 
   return {
-    version: 10,
+    version: 11,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,

@@ -135,8 +135,8 @@ export interface AnalysisResult {
   // v6: weighted/trending churn, files_skipped, hotspot why-strings;
   // v7: guard (shared-condition) signal; v8: test-coverage-presence signal;
   // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary;
-  // v10: semantic (nested-optionality) signal
-  version: 10;
+  // v10: semantic (nested-optionality) signal; v11/v12: analyzer refinements
+  version: 11;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;

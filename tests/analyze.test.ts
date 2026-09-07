@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { analyzeRepo, findCycles, normalize } from "../src/analyze";
 import { detectDuplication, fingerprint, WINDOW } from "../src/duplication";
 import { DEFAULT_CONFIG } from "../src/types";
+import { countMagic, countRepeatedJsxText } from "../src/languages/analyzer";
+import { stripCommentsAndStrings } from "../src/languages/strip";
 
 const FIXTURES = join(import.meta.dir, "..", "fixtures");
 
@@ -107,6 +109,13 @@ describe("analyzeRepo on fixtures", () => {
     expect(magic.magic_score).toBe(100); // 8 literals / 14 LOC — way past 5-per-100 cap
     const clean = result.files.find((f) => f.path === "typescript/simple/util.ts")!;
     expect(clean.magic_score).toBe(0);
+  });
+
+  test("magic signal: repeated visible JSX text is counted, dictionary references are not", () => {
+    const source = `<button>Revisar</button><span>Revisar</span><span>{COPY.review}</span>`;
+    const view = stripCommentsAndStrings(source, { keepStrings: true });
+    expect(countRepeatedJsxText(view)).toBe(1);
+    expect(countMagic(view, view, /^\s*(?:export\s+)?const\b/).strings).toBe(1);
   });
 
   test("generic analyzer: python complexity and imports resolve", () => {
@@ -238,8 +247,8 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 10)", () => {
-    expect(result.version).toBe(10);
+  test("JSON schema shape (version 11)", () => {
+    expect(result.version).toBe(11);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);

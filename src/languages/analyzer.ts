@@ -124,10 +124,23 @@ export function findSharedConditionGroups(
 // named-constant declarations, excluding conventional 0/1/2. Strings:
 // literals used in comparisons or case/match arms — stringly-typed logic
 // that wants to be an enum. Named constants are the fix, so they don't count.
+// Repeated visible JSX text is counted too: copy duplicated across buttons or
+// labels should live in a dictionary instead of drifting between screens.
 const ALLOWED_NUMBERS = new Set(["0", "1", "2"]);
 const NUMBER = /(?<![\w.])\d+(?:\.\d+)?(?![\w.])/g;
 const STRING_COMPARE = /[=!]={1,2}\s*(['"])(?:\\.|(?!\1).)+\1/g;
 const STRING_ARM = /\bcase\s+(['"])|(['"])(?:\\.|(?!\2).)+\2\s*=>/g;
+const JSX_TEXT = />\s*([^<>{}\n][^<>{}\n]*?)\s*</g;
+
+export function countRepeatedJsxText(source: string): number {
+  const counts = new Map<string, number>();
+  for (const match of source.matchAll(JSX_TEXT)) {
+    const text = match[1].replace(/\s+/g, " ").trim();
+    if (text.length < 3) continue;
+    counts.set(text, (counts.get(text) ?? 0) + 1);
+  }
+  return [...counts.values()].reduce((sum, count) => sum + Math.max(0, count - 1), 0);
+}
 
 // Net brace balance of a line (opens minus closes) — used to track whether
 // a multi-line object literal body is still open.
@@ -154,7 +167,8 @@ export function countMagic(
   }
   const strings =
     (stringsView.match(STRING_COMPARE) ?? []).length +
-    (stringsView.match(STRING_ARM) ?? []).length;
+    (stringsView.match(STRING_ARM) ?? []).length +
+    countRepeatedJsxText(stringsView);
   return { numbers, strings };
 }
 

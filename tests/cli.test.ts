@@ -22,7 +22,7 @@ describe("entropy CLI (end-to-end)", () => {
     const { stdout, exitCode, stderr } = await run(["report", "--repo", FIXTURES, "--format", "json"]);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
-    expect(parsed.version).toBe(10);
+    expect(parsed.version).toBe(11);
     expect(typeof parsed.summary.entropy).toBe("number");
     expect(stderr).toBe(""); // no progress noise on a non-TTY pipe
   });

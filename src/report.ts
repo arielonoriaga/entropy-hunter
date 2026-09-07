@@ -195,7 +195,7 @@ Data clumps
 
 Magic literals
   numbers: ${f.magic_numbers}
-  strings (comparisons/arms): ${f.magic_strings}
+  strings (comparisons/arms/repeated JSX): ${f.magic_strings}
 
 Guard clumps
   groups of 2+ sibling ifs sharing a guard: ${f.guard_clumps}${
