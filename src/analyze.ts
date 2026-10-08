@@ -103,7 +103,7 @@ interface CachedBase {
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v12"; // v12: count repeated visible JSX text in the magic-string signal
+const CACHE_VERSION = "v13"; // v13: count chains of 3+ comparisons against the same identifier in the magic-string signal
 
 export type ProgressFn = (message: string) => void;
 

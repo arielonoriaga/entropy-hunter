@@ -126,11 +126,24 @@ export function findSharedConditionGroups(
 // that wants to be an enum. Named constants are the fix, so they don't count.
 // Repeated visible JSX text is counted too: copy duplicated across buttons or
 // labels should live in a dictionary instead of drifting between screens.
+// Chained equality comparisons against the SAME identifier — `x !== "a" &&
+// x !== "b" && x !== "c"` — are the sharpest form of this smell: every
+// individual `!== "lit"` already counts once via STRING_COMPARE, but a
+// chain of 3+ against one identifier is specifically the shape that
+// collapses into a single `SET.has(x)`/`!SET.has(x)`, and scattered
+// comparisons across unrelated identifiers don't share that fix. Counted
+// per chain (not per comparison in it) as an aggravating addition on top.
 const ALLOWED_NUMBERS = new Set(["0", "1", "2"]);
 const NUMBER = /(?<![\w.])\d+(?:\.\d+)?(?![\w.])/g;
 const STRING_COMPARE = /[=!]={1,2}\s*(['"])(?:\\.|(?!\1).)+\1/g;
 const STRING_ARM = /\bcase\s+(['"])|(['"])(?:\\.|(?!\2).)+\2\s*=>/g;
 const JSX_TEXT = />\s*([^<>{}\n][^<>{}\n]*?)\s*</g;
+const CHAINED_COMPARISON =
+  /([A-Za-z_$][\w$]*(?:\([^()]*\))?)\s*[!=]==?\s*(['"])(?:\\.|(?!\2).)+\2(?:\s*&&\s*\1\s*[!=]==?\s*(['"])(?:\\.|(?!\3).)+\3){2,}/g;
+
+export function countChainedComparisons(source: string): number {
+  return (source.match(CHAINED_COMPARISON) ?? []).length;
+}
 
 export function countRepeatedJsxText(source: string): number {
   const counts = new Map<string, number>();
@@ -168,7 +181,8 @@ export function countMagic(
   const strings =
     (stringsView.match(STRING_COMPARE) ?? []).length +
     (stringsView.match(STRING_ARM) ?? []).length +
-    countRepeatedJsxText(stringsView);
+    countRepeatedJsxText(stringsView) +
+    countChainedComparisons(stringsView);
   return { numbers, strings };
 }
 

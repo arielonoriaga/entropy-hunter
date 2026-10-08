@@ -63,9 +63,9 @@ describe("analyzeRepo on fixtures", () => {
 
   test("finds dedicated and generic-fallback languages", () => {
     expect(result.files_by_language.rust).toBe(11);
-    expect(result.files_by_language.typescript).toBe(13);
+    expect(result.files_by_language.typescript).toBe(14);
     expect(result.files_by_language.python).toBe(2); // generic fallback
-    expect(result.files_analyzed).toBe(26);
+    expect(result.files_analyzed).toBe(27);
   });
 
   test("test signal: tested files score 0, untested-with-complexity files don't", () => {

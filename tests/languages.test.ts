@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { rustAnalyzer } from "../src/languages/rust";
 import { typescriptAnalyzer } from "../src/languages/typescript";
+import { countChainedComparisons } from "../src/languages/analyzer";
 
 const FIX = join(import.meta.dir, "..", "fixtures");
 const read = (p: string) => readFileSync(join(FIX, p), "utf8");
@@ -257,6 +258,22 @@ describe("magic literals", () => {
     );
     expect(magic.numbers).toBe(0);
     expect(magic.strings).toBe(0);
+  });
+
+  test("ts: a chain of 3+ comparisons against the same identifier counts as one aggravating hit on top of each comparison", () => {
+    const magic = typescriptAnalyzer.magic(read("typescript/magic/chained-comparison.ts"));
+    // STRING_COMPARE: 4 (showExportButtons) + 3 (isShortChain's status/status/role —
+    // not a chain itself, see below) = 7, plus +1 for the one real chain
+    // (showExportButtons: 4 comparisons, all against `tab()`) = 8.
+    expect(magic.numbers).toBe(0);
+    expect(magic.strings).toBe(8);
+  });
+
+  test("chained-comparison detector requires 3+ comparisons against the SAME identifier", () => {
+    expect(countChainedComparisons('a !== "x" && a !== "y"')).toBe(0); // only 2
+    expect(countChainedComparisons('a !== "x" && b !== "y" && c !== "z"')).toBe(0); // different idents
+    expect(countChainedComparisons('a !== "x" && a !== "y" && a !== "z"')).toBe(1); // exactly 3
+    expect(countChainedComparisons('tab() !== "a" && tab() !== "b" && tab() !== "c" && tab() !== "d"')).toBe(1); // call expressions
   });
 
   test("multi-line const object literals are exempt field-by-field, including nested blocks", () => {
