@@ -18,6 +18,9 @@ const NESTED_OPTION = /Option\s*<\s*Option\s*<(?:\s*Option\s*<)*/g;
 const PUB_STRUCT = /\bpub\s+struct\s+([A-Za-z_]\w*)/g;
 
 const STD_CRATES = new Set(["std", "core", "alloc"]);
+// imports() tags `mod x;` declarations so resolve() can tell them from `use`
+// paths; a space can never appear inside a module path.
+const MOD_SPEC = "mod ";
 
 // The engine calls complexity/dependencies/normalizedLines back-to-back on
 // the same source — strip once, reuse (1-entry memo).
@@ -54,8 +57,22 @@ export const rustAnalyzer: LanguageAnalyzer = {
     return complexityFromMarkers(stripped(source), FN_HEADER, DECISION);
   },
 
-  dependencies(source, path, fileSet): DependencyResult {
+  imports(source) {
     const src = stripped(source);
+    const specs = new Set<string>();
+    // mod x; → sibling module file
+    // (^|;|]) start: also catches `#[cfg(test)] mod x;` sharing the attribute's line
+    for (const m of src.matchAll(/(?:^|;|\])[ \t]*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
+      specs.add(MOD_SPEC + m[1]);
+    }
+    // use paths (handles `use a::b::{c, d}` at the group level only)
+    for (const m of src.matchAll(/^[ \t]*(?:pub(?:\([^)]*\))?\s+)?use\s+([A-Za-z_:][A-Za-z0-9_:]*)/gm)) {
+      specs.add(m[1]);
+    }
+    return [...specs];
+  },
+
+  resolve(specs, path, fileSet): DependencyResult {
     const internal = new Set<string>();
     const external = new Set<string>();
 
@@ -65,25 +82,22 @@ export const rustAnalyzer: LanguageAnalyzer = {
     const srcRoot = srcIdx >= 0 ? path.split("/").slice(0, srcIdx + 1).join("/") : "";
     const stem = path.replace(/\.rs$/, "");
 
-    // mod x; → sibling module file
-    // (^|;|]) start: also catches `#[cfg(test)] mod x;` sharing the attribute's line
-    for (const m of src.matchAll(/(?:^|;|\])\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
-      const name = m[1];
-      const hit = tryPaths(fileSet, [
-        `${dir ? dir + "/" : ""}${name}.rs`,
-        `${dir ? dir + "/" : ""}${name}/mod.rs`,
-        `${stem}/${name}.rs`,
-        `${stem}/${name}/mod.rs`,
-      ]);
-      if (hit && hit !== path) internal.add(hit);
-    }
-
-    // use paths (handles `use a::b::{c, d}` at the group level only)
-    for (const m of src.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([A-Za-z_:][A-Za-z0-9_:]*)/gm)) {
-      const segs = m[1].split("::").filter(Boolean);
+    for (const spec of specs) {
+      let hit: string | null = null;
+      if (spec.startsWith(MOD_SPEC)) {
+        const name = spec.slice(MOD_SPEC.length);
+        hit = tryPaths(fileSet, [
+          `${dir ? dir + "/" : ""}${name}.rs`,
+          `${dir ? dir + "/" : ""}${name}/mod.rs`,
+          `${stem}/${name}.rs`,
+          `${stem}/${name}/mod.rs`,
+        ]);
+        if (hit && hit !== path) internal.add(hit);
+        continue;
+      }
+      const segs = spec.split("::").filter(Boolean);
       if (segs.length === 0) continue;
       const head = segs[0];
-      let hit: string | null = null;
       if (head === "crate") {
         hit = resolveSegments(srcRoot, segs.slice(1), fileSet);
         if (!hit && srcRoot) hit = tryPaths(fileSet, [`${srcRoot}/lib.rs`, `${srcRoot}/main.rs`]);

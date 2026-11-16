@@ -2,7 +2,7 @@
 // README's 3-layer data model): a small, fixed, auditable rule table over
 // already-computed scores — not free-form judgment. Every rule here is
 // documented in the README alongside its trigger condition.
-import type { AnalysisResult } from "./types";
+import { SIGNALS, type AnalysisResult, type Signal } from "./types";
 
 export type Band = "HEALTHY" | "ATTENTION" | "CRITICAL";
 export type Color = "green" | "yellow" | "red" | "gray";
@@ -37,7 +37,7 @@ export interface HealthReport {
   recommendations: string[];
 }
 
-const SIGNAL_LABELS: Record<string, string> = {
+export const SIGNAL_LABELS: Record<Signal, string> = {
   complexity: "Complexity", coupling: "Coupling", churn: "Churn", duplication: "Duplication",
   state: "State", clumping: "Clumping", deadcode: "Dead code", architecture: "Architecture",
   reach: "Reach", magic: "Magic", guard: "Guard", test: "Test", semantic: "Semantic",
@@ -73,11 +73,7 @@ export function computeHealth(r: AnalysisResult): HealthReport {
   const trendInfo = trendWord(trend.delta);
   const trendValue = trend.delta === null ? "-" : `${trend.delta >= 0 ? "+" : ""}${trend.delta.toFixed(1)}`;
 
-  const signalKeys = [
-    "complexity", "coupling", "churn", "duplication", "state", "clumping",
-    "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
-  ] as const;
-  const attention: SignalLine[] = signalKeys
+  const attention: SignalLine[] = SIGNALS
     .map((k) => ({ key: k, score: summary[k] }))
     .filter((s) => s.score >= 30)
     .sort((a, b) => b.score - a.score)

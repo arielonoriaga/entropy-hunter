@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { rustAnalyzer } from "../src/languages/rust";
 import { typescriptAnalyzer } from "../src/languages/typescript";
-import { countChainedComparisons } from "../src/languages/analyzer";
+import { countChainedComparisons, dependenciesOf } from "../src/languages/analyzer";
 
 const FIX = join(import.meta.dir, "..", "fixtures");
 const read = (p: string) => readFileSync(join(FIX, p), "utf8");
@@ -373,7 +373,7 @@ describe("rust dependency extraction", () => {
   ]);
 
   test("mod and use crate:: resolve to files; external crates split out", () => {
-    const deps = rustAnalyzer.dependencies(
+    const deps = dependenciesOf(rustAnalyzer, 
       read("rust/coupled/src/payments.rs"),
       "rust/coupled/src/payments.rs",
       files,
@@ -383,7 +383,7 @@ describe("rust dependency extraction", () => {
   });
 
   test("mod declarations link main.rs to modules", () => {
-    const deps = rustAnalyzer.dependencies(
+    const deps = dependenciesOf(rustAnalyzer, 
       read("rust/coupled/src/main.rs"),
       "rust/coupled/src/main.rs",
       files,
@@ -402,7 +402,7 @@ describe("typescript dependency extraction", () => {
   ]);
 
   test("relative imports resolve; packages are external", () => {
-    const deps = typescriptAnalyzer.dependencies(
+    const deps = dependenciesOf(typescriptAnalyzer, 
       read("typescript/coupled/payments.ts"),
       "typescript/coupled/payments.ts",
       files,
@@ -413,7 +413,7 @@ describe("typescript dependency extraction", () => {
 
   test("scoped packages keep their scope; index and .js-suffix imports resolve", () => {
     const set = new Set(["a/b.ts", "a/c/index.ts", "a/d.ts"]);
-    const deps = typescriptAnalyzer.dependencies(
+    const deps = dependenciesOf(typescriptAnalyzer, 
       `import x from "./b";\nimport y from "./c";\nimport z from "./d.js";\nimport s from "@scope/pkg/sub";`,
       "a/main.ts",
       set,

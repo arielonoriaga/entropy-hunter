@@ -1,6 +1,8 @@
 import pc from "picocolors";
 import type { AnalysisResult, FileMetrics } from "./types";
+import type { CheckResult, CheckedFile } from "./check";
 import type { Color, HealthReport } from "./health";
+import type { ModuleRollup, SignalScore, ZoomResult } from "./zoom";
 import { withDeltas, type SnapshotRow } from "./storage";
 
 const fmt = (n: number) => n.toFixed(1);
@@ -178,7 +180,9 @@ Churn
   deletions: ${f.lines_deleted}
 
 Duplication
-  ${fmt(f.duplication_percentage)}%
+  ${fmt(f.duplication_percentage)}%${
+    f.duplicate_partners.length ? `\n  shared with: ${f.duplicate_partners.join(", ")}` : ""
+  }
 
 State space
   types: ${f.type_count}
@@ -215,7 +219,7 @@ Semantic ambiguity
   }${f.nested_optional_pub ? "\n  nested optionality also appears in a public struct" : ""}
 
 Graph
-  transitive dependents: ${f.transitive_dependents}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${
+  transitive dependents: ${f.transitive_dependents}${f.in_cycle ? "\n  IN A DEPENDENCY CYCLE" : ""}${f.is_orphan ? "\n  ORPHAN: nothing imports this file (possible dead code)" : ""}${
     f.arch_violations ? `\n  architecture violations: ${f.arch_violations} inner→outer imports` : ""
   }
 
@@ -322,4 +326,80 @@ ${r.cycles.length ? `\n## Circular dependencies\n\n${r.cycles.map((c) => `- ${c.
       ? `\n## Architecture violations\n\n${r.architecture_violations.map((v) => `- \`${v.from}\` (${v.from_layer}) → \`${v.to}\` (${v.to_layer})`).join("\n")}`
       : ""
   }${r.files_skipped.length ? `\n## Files skipped\n\n${r.files_skipped.map((p) => `- \`${p}\``).join("\n")}` : ""}`;
+}
+
+// --- entropy check -----------------------------------------------------------
+
+const VERDICT_MARK: Record<CheckedFile["verdict"], string> = {
+  fail: pc.red("✗ FAIL  "),
+  warn: pc.yellow("⚠ warn  "),
+  waived: pc.dim("~ waived"),
+  pass: pc.green("✓ ok    "),
+};
+
+function renderCheckedFile(f: CheckedFile): string {
+  const entropy =
+    f.entropy_before === null
+      ? `new, entropy ${fmt(f.entropy_after)}`
+      : `entropy ${fmt(f.entropy_before)} → ${fmt(f.entropy_after)} (${f.delta >= 0 ? "+" : ""}${fmt(f.delta)})`;
+  const moved = f.status === "renamed" ? ` (was ${f.base_path})` : "";
+  const waiver = f.waiver ? [`    accepted: ${f.waiver}`] : [];
+  const findings = f.findings.map((x) => `    ${x.level === "fail" ? "✗" : "⚠"} ${x.rule}: ${x.message}`);
+  return [`${VERDICT_MARK[f.verdict]} ${f.path}${moved} — ${entropy}`, ...waiver, ...findings].join("\n");
+}
+
+export function renderCheck(r: CheckResult): string {
+  const { summary } = r;
+  const header = `${pc.bold("ENTROPY CHECK")} — base ${r.base.commit.slice(0, 7)}${
+    r.base.ref === r.base.commit ? "" : ` (${r.base.ref})`
+  }`;
+  if (!r.files.length) return `${header}\n\nNo analyzable files changed.\n\nVerdict: ${pc.green("PASS")}`;
+  // Failures first: they are what the reader has to act on.
+  const order: CheckedFile["verdict"][] = ["fail", "warn", "waived", "pass"];
+  const files = [...r.files].sort(
+    (a, b) => order.indexOf(a.verdict) - order.indexOf(b.verdict) || a.path.localeCompare(b.path),
+  );
+  const verdict =
+    r.verdict === "fail"
+      ? `${pc.red("FAIL")} — ${summary.failed} file(s) regressed. Fix the cause (\`entropy zoom <path>\` shows at which level it lives), or accept a legitimate one with \`entropy check --accept <path> --reason "<why>"\`.`
+      : `${pc.green("PASS")}${summary.warned ? ` — ${summary.warned} file(s) with warnings` : ""}${
+          summary.waived ? ` — ${summary.waived} accepted` : ""
+        }`;
+  return `${header}
+${summary.files_changed} file(s) changed · repository entropy ${fmt(summary.entropy_before)} → ${fmt(summary.entropy_after)}
+
+${files.map(renderCheckedFile).join("\n")}
+
+Verdict: ${verdict}`;
+}
+
+// --- entropy zoom ------------------------------------------------------------
+
+const signalList = (signals: SignalScore[]) =>
+  signals.map((s) => `${s.signal} ${Math.round(s.score)}`).join(", ") || "none";
+
+export function renderModules(modules: ModuleRollup[], limit: number): string {
+  const rows = modules.slice(0, limit).map((m) => {
+    const cohesion = m.cohesion === null ? "-" : m.cohesion.toFixed(2);
+    return `${m.path || "."}
+   entropy: ${severity(m.entropy)(fmt(m.entropy))} · ${fmt(m.share)}% of repository entropy · ${m.files} files, ${m.loc} loc
+   dominant: ${signalList(m.dominant)}
+   cohesion: ${cohesion} (${m.imports_out} imports out, ${m.imported_by} imported by)
+   worst: ${m.worst.map((w) => `${w.path} (${fmt(w.entropy_score)})`).join(", ")}`;
+  });
+  return `${pc.bold("MODULES")} — where the entropy lives\n\n${rows.join("\n\n") || "(no directory holds enough analyzed files)"}`;
+}
+
+export function renderZoom(z: ZoomResult): string {
+  const levels = z.levels.map((level, i) => {
+    const lens = level.lens.map((l) => `${"  ".repeat(i)}   ${l.kind === "healthy" ? "·" : "→"} ${l.kind}: ${l.message}`);
+    return [
+      `${"  ".repeat(i)}${i ? "↑ " : ""}${level.level} ${pc.bold(level.path)} — entropy ${severity(level.entropy)(fmt(level.entropy))} (${signalList(level.dominant)})`,
+      ...lens,
+    ].join("\n");
+  });
+  const conclusion = z.fix_at
+    ? `Fix at: ${pc.bold(z.fix_at)} — the outermost level that owns a cause.`
+    : "No level owns a systemic cause — treat it as a local cleanup, or leave it.";
+  return `${pc.bold("ZOOM")} ${z.target}\n\n${levels.join("\n")}\n\n${conclusion}`;
 }

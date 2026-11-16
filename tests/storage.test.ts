@@ -152,7 +152,7 @@ describe("incremental cache", () => {
     expect(strip(cold)).toEqual(strip(uncached));
     expect(strip(warm)).toEqual(strip(uncached));
     // cache actually populated, one row per analyzed file
-    const n = storage.db.query("SELECT COUNT(*) AS n FROM file_cache").get() as { n: number };
+    const n = storage.db.query("SELECT COUNT(*) AS n FROM analysis_cache").get() as { n: number };
     expect(n.n).toBe(uncached.files_analyzed);
     storage.close();
   });
@@ -164,7 +164,7 @@ describe("incremental cache", () => {
 
     const storage = new Storage(join(dir, "cache-invalidate.db"));
     const before = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage, null);
-    const beforeRow = storage.getFileCache("typescript/simple/util.ts")!;
+    const beforeRow = storage.loadFileCache().get("typescript/simple/util.ts")!;
 
     writeFileSync(
       target,
@@ -175,7 +175,7 @@ describe("incremental cache", () => {
     );
 
     const after = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage, null);
-    const afterRow = storage.getFileCache("typescript/simple/util.ts")!;
+    const afterRow = storage.loadFileCache().get("typescript/simple/util.ts")!;
     const directUncached = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
     expect(afterRow.content_hash).not.toBe(beforeRow.content_hash);
@@ -191,13 +191,13 @@ describe("incremental cache", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
-  test("adding a file that changes the fileset invalidates dependency cache without touching unrelated content hashes", () => {
+  test("adding a file re-resolves dependencies without invalidating unrelated cache rows", () => {
     const repo = mkdtempSync(join(tmpdir(), "entropy-repo-"));
     cpSync(FIXTURES, repo, { recursive: true });
 
     const storage = new Storage(join(dir, "cache-fileset.db"));
     analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage, null);
-    const sharedBefore = storage.getFileCache("typescript/coupled/shared.ts")!;
+    const sharedBefore = storage.loadFileCache().get("typescript/coupled/shared.ts")!;
 
     // New file that imports shared.ts, changing shared.ts's fan_in once resolved.
     writeFileSync(
@@ -206,12 +206,11 @@ describe("incremental cache", () => {
     );
 
     const after = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, storage, null);
-    const sharedAfter = storage.getFileCache("typescript/coupled/shared.ts")!;
+    const sharedAfter = storage.loadFileCache().get("typescript/coupled/shared.ts")!;
     const directUncached = analyzeRepo(repo, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
 
-    // content unchanged → same content_hash, but fileset_hash must have moved
-    expect(sharedAfter.content_hash).toBe(sharedBefore.content_hash);
-    expect(sharedAfter.fileset_hash).not.toBe(sharedBefore.fileset_hash);
+    // content unchanged → the cached row is reused as is; only resolution reran
+    expect(sharedAfter).toEqual(sharedBefore);
 
     const sharedFile = after.files.find((f) => f.path === "typescript/coupled/shared.ts")!;
     const directShared = directUncached.files.find((f) => f.path === "typescript/coupled/shared.ts")!;

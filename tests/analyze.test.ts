@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { analyzeRepo, findCycles, normalize } from "../src/analyze";
+import { analyzeRepo, analyzeTree, findCycles, normalize } from "../src/analyze";
+import { typescriptAnalyzer } from "../src/languages/typescript";
 import { detectDuplication, fingerprint, WINDOW } from "../src/duplication";
 import { DEFAULT_CONFIG } from "../src/types";
 import { countMagic, countRepeatedJsxText } from "../src/languages/analyzer";
@@ -32,6 +33,36 @@ describe("duplication", () => {
     expect(result.get("b.ts")!.duplicated_lines).toBe(WINDOW);
     expect(result.get("c.ts")!.duplicated_lines).toBe(0);
     expect(result.get("a.ts")!.duplication_percentage).toBeCloseTo((WINDOW / (WINDOW + 1)) * 100);
+  });
+
+  test("names the files a clone is shared with, most-shared first", () => {
+    const block = Array.from({ length: WINDOW + 2 }, (_, i) => `statement number ${i};`);
+    const result = detectDuplication(
+      new Map([
+        ["a.ts", fingerprint(block)],
+        ["b.ts", fingerprint(block)],
+        ["c.ts", fingerprint(block.slice(0, WINDOW))], // shares one window, a and b share three
+        ["d.ts", fingerprint(["on its own;", "entirely;"])],
+      ]),
+    );
+    expect(result.get("a.ts")!.partners).toEqual(["b.ts", "c.ts"]);
+    expect(result.get("c.ts")!.partners).toEqual(["a.ts", "b.ts"]);
+    expect(result.get("d.ts")!.partners).toEqual([]);
+  });
+
+  test("a block repeated inside one file is duplication with no partner", () => {
+    const block = Array.from({ length: WINDOW }, (_, i) => `statement number ${i};`);
+    const result = detectDuplication(new Map([["a.ts", fingerprint([...block, "between;", ...block])]]));
+    expect(result.get("a.ts")!.duplicated_lines).toBe(WINDOW * 2);
+    expect(result.get("a.ts")!.partners).toEqual([]);
+  });
+
+  test("windows differing in one line do not collide", () => {
+    const block = Array.from({ length: WINDOW }, (_, i) => `statement number ${i};`);
+    const result = detectDuplication(
+      new Map([["a.ts", fingerprint(block)], ["b.ts", fingerprint([...block.slice(0, -1), "different;"])]]),
+    );
+    expect(result.get("a.ts")!.duplicated_lines).toBe(0);
   });
 
   test("no false positives below window size", () => {
@@ -247,8 +278,8 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 11)", () => {
-    expect(result.version).toBe(11);
+  test("JSON schema shape (version 12)", () => {
+    expect(result.version).toBe(12);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
@@ -364,5 +395,38 @@ describe("analyzeRepo on fixtures", () => {
         expect(h.why).toMatch(/^driven by (complexity|coupling|churn) \(/);
       }
     }
+  });
+});
+
+describe("lines eligible for duplication", () => {
+  test("punctuation-only lines (lone brackets, blanked string literals) are not fingerprinted", () => {
+    const table = ['const args = [', '  "--numstat",', '  "--no-merges",', '  "--no-renames",', "];", "run(args);"].join("\n");
+    const lines = typescriptAnalyzer.normalizedLines(table).map((l) => l.text);
+    // Two unrelated string tables must not look like clones of each other.
+    expect(lines).toEqual(["const args = [", "run(args);"]);
+  });
+});
+
+describe("path aliases end to end", () => {
+  test("an aliased import links files in the analysis graph", () => {
+    const files: Record<string, string> = {
+      "web/tsconfig.json": '{ "compilerOptions": { "paths": { "~/*": ["./src/*"] } } }',
+      "web/src/main.ts": 'import { helper } from "~/lib/helper";\nhelper();\n',
+      "web/src/lib/helper.ts": "export const helper = () => 1;\n",
+    };
+    const tree = { files: Object.keys(files), read: (p: string) => files[p] ?? null };
+    const { result } = analyzeTree(".", tree, DEFAULT_CONFIG, new Map(), { storage: null, memo: null, progress: null });
+    const helper = result.files.find((f) => f.path === "web/src/lib/helper.ts")!;
+    expect(helper.dependents).toEqual(["web/src/main.ts"]);
+    expect(helper.is_orphan).toBe(false);
+  });
+
+  test("files on an import loop are marked in_cycle; others are not", () => {
+    const files: Record<string, string> = {
+      "a.ts": 'import "./b";\n', "b.ts": 'import "./a";\n', "c.ts": 'import "./a";\n',
+    };
+    const tree = { files: Object.keys(files), read: (p: string) => files[p] ?? null };
+    const { result } = analyzeTree(".", tree, DEFAULT_CONFIG, new Map(), { storage: null, memo: null, progress: null });
+    expect(result.files.map((f) => [f.path, f.in_cycle])).toEqual([["a.ts", true], ["b.ts", true], ["c.ts", false]]);
   });
 });

@@ -1,56 +1,25 @@
-import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
-import type { AnalysisResult, EntropyConfig, FileFacts, FileMetrics, Summary } from "./types";
+import { existsSync } from "node:fs";
+import {
+  SIGNALS, type AnalysisResult, type EntropyConfig, type FileFacts, type FileMetrics,
+  type ArchViolation, type Signal, type Summary,
+} from "./types";
+import { loadAliases } from "./aliases";
 import { analyzerFor } from "./languages";
 import { countNonBlankLines } from "./languages/strip";
-import { churn, currentCommit, headCommit, listTrackedFiles, repoName, sinceToDate } from "./git";
-import { detectDuplication, fingerprint, type FileFingerprint } from "./duplication";
-import type { Storage } from "./storage";
 import {
-  isTestFile, type ComplexityResult, type DependencyResult, type TestCoverage,
-} from "./languages/analyzer";
+  churnLog, currentCommit, repoName, startOfUtcDay, summarizeChurn, worktreeRoot,
+  type ChurnLog, type FileChurn,
+} from "./git";
+import { detectDuplication, fingerprint, type FileFingerprint } from "./duplication";
+import { bitmask, transitiveReach } from "./graph";
+import type { Storage } from "./storage";
+import { workingTree, type SourceTree } from "./tree";
+import { isTestFile, type ComplexityResult, type LanguageAnalyzer } from "./languages/analyzer";
 
-const SKIP_DIRS = new Set([
-  ".git", ".entropy", "node_modules", "target", "target-musl", "dist",
-  "build", "out", "vendor", "coverage", ".next", ".cache",
-]);
-
-// visitedDirs guards against symlink cycles (a directory symlinked into its
-// own descendant) — without it this recurses until the stack overflows.
-function walkFiles(
-  root: string,
-  dir = root,
-  acc: string[] = [],
-  visitedDirs = new Set<string>(),
-): string[] {
-  let real: string;
-  try {
-    real = realpathSync(dir);
-  } catch {
-    return acc; // broken symlink or race with a deleted dir — skip, don't crash
-  }
-  if (visitedDirs.has(real)) return acc;
-  visitedDirs.add(real);
-
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name);
-    const st = statSync(full, { throwIfNoEntry: false });
-    if (!st) continue;
-    if (st.isDirectory()) {
-      if (!SKIP_DIRS.has(name) && !name.startsWith(".")) walkFiles(root, full, acc, visitedDirs);
-    } else {
-      acc.push(relative(root, full).replaceAll("\\", "/"));
-    }
-  }
-  return acc;
-}
+const analyzable = (files: string[]) => files.filter((f) => analyzerFor(f) !== null).sort();
 
 export function listAnalyzableFiles(repo: string): string[] {
-  const files = listTrackedFiles(repo) ?? walkFiles(repo);
-  return files
-    .filter((f) => !f.split("/").some((seg) => SKIP_DIRS.has(seg)))
-    .filter((f) => analyzerFor(f) !== null)
-    .sort();
+  return analyzable(workingTree(repo).files);
 }
 
 // Linear normalization, clamped to [0, 100]. cap = raw value scoring 100.
@@ -87,11 +56,13 @@ function explainHotspot(
   return `driven by ${top.name} (${top.fact})${untested}`;
 }
 
+// Everything derived from one file's content alone — what the cache stores.
 interface CachedBase {
   language: string;
   loc: number;
   cx: ComplexityResult;
   fp: FileFingerprint;
+  imports: string[]; // plugin-encoded specifiers; resolved against the file set every run
   st: {
     types: number; optional: number; boolean: number; max: number;
     clumps: number; maxClump: number; clumpPrefix: string;
@@ -103,9 +74,92 @@ interface CachedBase {
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v13"; // v13: count chains of 3+ comparisons against the same identifier in the magic-string signal
+const CACHE_VERSION = "v14"; // v14: imports cached unresolved; numeric window hashes; punctuation-only lines not fingerprinted
 
 export type ProgressFn = (message: string) => void;
+
+// Per-file results of one analysis, reusable by another analysis of a
+// mostly-identical tree in the same process (entropy check's base side).
+export type BaseMemo = Map<string, { content_hash: string; base: CachedBase }>;
+
+function measure(analyzer: LanguageAnalyzer, src: string): CachedBase {
+  const types = analyzer.stateSpace(src);
+  const guards = analyzer.sharedConditions(src);
+  const worstGuard = guards.reduce((best, g) => (g.count > best.count ? g : best), {
+    prefix: "", count: 0, lines: [] as number[],
+  });
+  return {
+    language: analyzer.language,
+    loc: countNonBlankLines(src),
+    cx: analyzer.complexity(src),
+    fp: fingerprint(analyzer.normalizedLines(src).map((l) => l.text)),
+    imports: analyzer.imports(src),
+    st: {
+      types: types.length,
+      optional: types.reduce((s, t) => s + t.optional_fields, 0),
+      boolean: types.reduce((s, t) => s + t.boolean_fields, 0),
+      max: types.reduce((s, t) => Math.max(s, t.optional_fields + t.boolean_fields), 0),
+      clumps: types.filter((t) => t.clump_fields > 0).length,
+      maxClump: types.reduce((s, t) => Math.max(s, t.clump_fields), 0),
+      clumpPrefix: types.reduce(
+        (best, t) => (t.clump_fields > best.clump_fields ? t : best),
+        { clump_fields: 0, clump_prefix: "" },
+      ).clump_prefix,
+      maxOptionalDepth: types.reduce((s, t) => Math.max(s, t.max_optional_depth), 0),
+      nestedOccurrences: types.reduce((s, t) => s + t.nested_optional_occurrences, 0),
+      nestedPub: types.some((t) => t.is_pub && t.max_optional_depth >= 1),
+    },
+    mg: analyzer.magic(src),
+    gd: { groups: guards.length, max: worstGuard.count, prefix: worstGuard.prefix },
+  };
+}
+
+// Window hashes travel as a raw BLOB beside the JSON, never through it.
+function toCacheRow(path: string, content_hash: string, base: CachedBase) {
+  const { fp, ...rest } = base;
+  return {
+    path,
+    content_hash,
+    base_json: JSON.stringify({ ...rest, fpLines: fp.lineCount }),
+    window_hashes: new Uint8Array(fp.hashes.buffer, fp.hashes.byteOffset, fp.hashes.byteLength),
+  };
+}
+
+function fromCacheRow(row: { base_json: string; window_hashes: Uint8Array }): CachedBase {
+  const { fpLines, ...rest } = JSON.parse(row.base_json);
+  const bytes = row.window_hashes;
+  // Copy: the BLOB's view is not guaranteed to be 8-byte aligned.
+  const hashes = new Float64Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  return { ...rest, fp: { hashes, lineCount: fpLines } };
+}
+
+// One log per checkout: worktrees share the cache database but sit on
+// different HEADs, and would otherwise evict each other's log every run.
+const CHURN_KEY_PREFIX = "churnlog:";
+
+// Churn for the window ending today. The raw log is cached and extended
+// incrementally (see git.ts), so only commits new since the last run cost
+// a `git log`.
+export function loadChurn(
+  repo: string,
+  since: string,
+  storage: Storage | null,
+  progress: ProgressFn | null,
+): Map<string, FileChurn> {
+  const key = CHURN_KEY_PREFIX + worktreeRoot(repo);
+  const cached = storage?.kvGet(key);
+  const prev: ChurnLog | null = cached ? JSON.parse(cached) : null;
+  if (!prev) progress?.("computing churn (git log)…");
+  const log = churnLog(repo, since, prev);
+  if (storage && log !== prev) {
+    storage.kvSet(key, JSON.stringify(log));
+    // Logs of checkouts that no longer exist (removed worktrees) go with them.
+    for (const other of storage.kvKeys(CHURN_KEY_PREFIX)) {
+      if (!existsSync(other.slice(CHURN_KEY_PREFIX.length))) storage.kvDelete(other);
+    }
+  }
+  return summarizeChurn(log, startOfUtcDay());
+}
 
 // All parameters are explicit and required — callers resolve defaults
 // (CLI flag > config) before calling. storage: null = run stateless;
@@ -118,106 +172,74 @@ export function analyzeRepo(
   progress: ProgressFn | null,
 ): AnalysisResult {
   progress?.("listing files…");
-  const paths = listAnalyzableFiles(repo);
+  const tree = workingTree(repo);
+  const churnMap = loadChurn(repo, since, storage, progress);
+  return analyzeTree(repo, tree, config, churnMap, { storage, memo: null, progress }).result;
+}
+
+// storage: persistent per-file cache (read + written); memo: results of an
+// earlier analysis in this process (read only) — either may be null.
+export interface AnalysisContext {
+  storage: Storage | null;
+  memo: BaseMemo | null;
+  progress: ProgressFn | null;
+}
+
+interface Measured {
+  facts: Map<string, FileFacts>;
+  files_skipped: string[];
+  dupInput: Map<string, FileFingerprint>;
+  memo: BaseMemo;
+}
+
+// Pass 1: per-file facts — measured once per content, cached after.
+function measureFiles(
+  tree: SourceTree,
+  churnMap: Map<string, FileChurn>,
+  ctx: AnalysisContext,
+): Measured {
+  const { storage, progress } = ctx;
+  const paths = analyzable(tree.files);
   const fileSet = new Set(paths);
-  const filesetHash = String(Bun.hash(paths.join("\n")));
-
-  // Churn depends only on committed history + window → cache per (HEAD, date).
-  let churnMap: ReturnType<typeof churn>;
-  const churnKey = `churn:${headCommit(repo)}:${sinceToDate(since)}`;
-  const cachedChurn = storage?.kvGet(churnKey);
-  if (cachedChurn) {
-    churnMap = new Map(JSON.parse(cachedChurn));
-  } else {
-    progress?.(`computing churn since ${sinceToDate(since)} (git log)…`);
-    churnMap = churn(repo, since);
-    storage?.kvSet(churnKey, JSON.stringify([...churnMap]));
-  }
-
-  const sources = new Map<string, string>();
-  const files_skipped: string[] = [];
-  for (const p of paths) {
-    try {
-      sources.set(p, readFileSync(join(repo, p), "utf8"));
-    } catch {
-      files_skipped.push(p); // unreadable: deleted mid-run, permissions, non-UTF8
-    }
-  }
-
-  // Pass 1: complexity, deps, duplication fingerprints — cached per file.
+  const aliases = loadAliases(tree);
+  const cacheRows = storage?.loadFileCache() ?? new Map();
   const facts = new Map<string, FileFacts>();
-  const depGraph = new Map<string, string[]>(); // path -> internal deps
+  const files_skipped: string[] = [];
   const dupInput = new Map<string, FileFingerprint>();
-  const cacheWrites: {
-    path: string; content_hash: string; fileset_hash: string;
-    base_json: string; deps_json: string;
-  }[] = [];
+  const memo: BaseMemo = new Map();
+  const cacheWrites: ReturnType<typeof toCacheRow>[] = [];
 
   let processed = 0;
-  for (const [path, src] of sources) {
-    if (++processed % 100 === 0 || processed === sources.size) {
-      progress?.(`analyzing files ${processed}/${sources.size}…`);
+  for (const path of paths) {
+    if (++processed % 100 === 0 || processed === paths.length) {
+      progress?.(`analyzing files ${processed}/${paths.length}…`);
+    }
+    const src = tree.read(path);
+    if (src === null) {
+      files_skipped.push(path); // unreadable: deleted mid-run, permissions, non-UTF8
+      continue;
     }
     const analyzer = analyzerFor(path)!;
     const contentHash = `${CACHE_VERSION}:${Bun.hash(src)}`;
-    const row = storage?.getFileCache(path);
-    const contentFresh = row?.content_hash === contentHash;
+    const remembered = ctx.memo?.get(path);
+    const row = cacheRows.get(path);
 
     let base: CachedBase;
-    let deps: DependencyResult;
-    let tc: TestCoverage;
-    if (contentFresh) {
-      base = JSON.parse(row!.base_json);
+    if (remembered?.content_hash === contentHash) {
+      base = remembered.base;
+    } else if (row?.content_hash === contentHash) {
+      base = fromCacheRow(row);
     } else {
-      const types = analyzer.stateSpace(src);
-      base = {
-        language: analyzer.language,
-        loc: countNonBlankLines(src),
-        cx: analyzer.complexity(src),
-        fp: fingerprint(analyzer.normalizedLines(src).map((l) => l.text)),
-        st: {
-          types: types.length,
-          optional: types.reduce((s, t) => s + t.optional_fields, 0),
-          boolean: types.reduce((s, t) => s + t.boolean_fields, 0),
-          max: types.reduce((s, t) => Math.max(s, t.optional_fields + t.boolean_fields), 0),
-          clumps: types.filter((t) => t.clump_fields > 0).length,
-          maxClump: types.reduce((s, t) => Math.max(s, t.clump_fields), 0),
-          clumpPrefix: types.reduce(
-            (best, t) => (t.clump_fields > best.clump_fields ? t : best),
-            { clump_fields: 0, clump_prefix: "" },
-          ).clump_prefix,
-          maxOptionalDepth: types.reduce((s, t) => Math.max(s, t.max_optional_depth), 0),
-          nestedOccurrences: types.reduce((s, t) => s + t.nested_optional_occurrences, 0),
-          nestedPub: types.some((t) => t.is_pub && t.max_optional_depth >= 1),
-        },
-        mg: analyzer.magic(src),
-        gd: (() => {
-          const groups = analyzer.sharedConditions(src);
-          const worst = groups.reduce((best, g) => (g.count > best.count ? g : best), {
-            prefix: "", count: 0, lines: [] as number[],
-          });
-          return { groups: groups.length, max: worst.count, prefix: worst.prefix };
-        })(),
-      };
+      base = measure(analyzer, src);
+      if (storage) cacheWrites.push(toCacheRow(path, contentHash, base));
     }
-    // deps AND testCoverage both depend on the fileset (companion-file /
-    // internal-import resolution), unlike `base` — bundled in one cache slot.
-    if (contentFresh && row!.fileset_hash === filesetHash) {
-      ({ deps, tc } = JSON.parse(row!.deps_json));
-    } else {
-      deps = analyzer.dependencies(src, path, fileSet);
-      tc = analyzer.testCoverage(src, path, fileSet);
-    }
-    if (storage && !(contentFresh && row!.fileset_hash === filesetHash)) {
-      cacheWrites.push({
-        path, content_hash: contentHash, fileset_hash: filesetHash,
-        base_json: JSON.stringify(base), deps_json: JSON.stringify({ deps, tc }),
-      });
-    }
+    memo.set(path, { content_hash: contentHash, base });
+    // Both depend on which files exist, so neither is cached; both are cheap.
+    const deps = analyzer.resolve(base.imports, path, fileSet, aliases);
+    const tc = analyzer.testCoverage(src, path, fileSet);
 
     const cx = base.cx;
     dupInput.set(path, base.fp);
-    depGraph.set(path, deps.internal);
     const ch = churnMap.get(path) ?? {
       commits: 0, lines_added: 0, lines_deleted: 0, weighted_commits: 0,
       trend: "stable" as const,
@@ -245,6 +267,7 @@ export function analyzeRepo(
       duplicated_lines: 0,
       duplicated_blocks: 0,
       duplication_percentage: 0,
+      duplicate_partners: [],
       type_count: base.st.types,
       optional_fields: base.st.optional,
       boolean_fields: base.st.boolean,
@@ -264,233 +287,226 @@ export function analyzeRepo(
       nested_optional_pub: base.st.nestedPub,
       is_entrypoint: isEntrypoint(path),
       is_orphan: false,
+      in_cycle: false,
       transitive_dependents: 0,
       arch_violations: 0,
     });
   }
 
   if (storage && cacheWrites.length) storage.putFileCaches(cacheWrites);
+  return { facts, files_skipped, dupInput, memo };
+}
 
-  // Pass 2: fan-in from inverted graph
-  for (const [from, deps] of depGraph) {
-    for (const dep of deps) {
+const MAX_REPORTED_VIOLATIONS = 100;
+
+// Imports that point from an inner layer to an outer one (hexagonal direction).
+function layerViolations(f: FileFacts, layers: string[]): ArchViolation[] {
+  const fromLayer = layerOf(f.path, layers);
+  if (fromLayer === -1) return [];
+  return f.dependencies.flatMap((dep) => {
+    const toLayer = layerOf(dep, layers);
+    return toLayer !== -1 && fromLayer < toLayer
+      ? [{ from: f.path, to: dep, from_layer: layers[fromLayer], to_layer: layers[toLayer] }]
+      : [];
+  });
+}
+
+// Pass 2: everything that needs the whole dependency graph — fan-in,
+// orphans, cycles, reach, transitive test coverage, layer direction.
+function linkGraph(facts: Map<string, FileFacts>, config: EntropyConfig): ArchViolation[] {
+  for (const from of facts.values()) {
+    for (const dep of from.dependencies) {
       const f = facts.get(dep);
-      if (f && dep !== from) {
+      if (f && dep !== from.path) {
         f.fan_in++;
         f.dependent_count++;
-        f.dependents.push(from);
+        f.dependents.push(from.path);
       }
     }
   }
   for (const f of facts.values()) f.dependents.sort();
 
-  progress?.("graph analysis (orphans, reach, architecture)…");
-  const reach = transitiveReachSets(new Map([...facts].map(([p, f]) => [p, f.dependents])));
+  const order = [...facts.keys()]; // node index → path (sorted, so index order is path order)
+  const indexOf = new Map(order.map((p, i) => [p, i]));
+  const reach = transitiveReach(order.map((p) => facts.get(p)!.dependents.map((d) => indexOf.get(d)!)));
+  const testFiles = bitmask(order.length, order.flatMap((p, i) => (isTestFile(p) ? [i] : [])));
   const layers = config.architecture.layers.split(",").map((l) => l.trim()).filter(Boolean);
-  const architecture_violations: import("./types").ArchViolation[] = [];
+  const architecture_violations: ArchViolation[] = [];
   for (const f of facts.values()) {
+    const node = indexOf.get(f.path)!;
     f.is_orphan = f.fan_in === 0 && !f.is_entrypoint;
-    const reachSet = reach.get(f.path);
-    f.transitive_dependents = reachSet?.size ?? 0;
+    f.in_cycle = reach.cyclic(node);
+    f.transitive_dependents = reach.count(node);
     // A companion-file match already covers the common case; this catches
     // files only exercised transitively (e.g. an internal helper imported
     // by another module that a test file imports, not directly by the test).
-    if (!f.has_test && reachSet) {
-      for (const dep of reachSet) {
-        if (isTestFile(dep)) {
-          f.has_test = true;
-          f.test_path = dep;
-          break;
-        }
+    if (!f.has_test) {
+      const test = reach.firstIn(node, testFiles);
+      if (test !== -1) {
+        f.has_test = true;
+        f.test_path = order[test];
       }
     }
-    const fromLayer = layerOf(f.path, layers);
-    if (fromLayer === -1) continue;
-    for (const dep of f.dependencies) {
-      const toLayer = layerOf(dep, layers);
-      if (toLayer !== -1 && fromLayer < toLayer) {
-        f.arch_violations++;
-        if (architecture_violations.length < 100) {
-          architecture_violations.push({
-            from: f.path, to: dep,
-            from_layer: layers[fromLayer], to_layer: layers[toLayer],
-          });
-        }
-      }
-    }
+    const outward = layerViolations(f, layers);
+    f.arch_violations = outward.length;
+    architecture_violations.push(...outward);
   }
+  return architecture_violations.slice(0, MAX_REPORTED_VIOLATIONS);
+}
 
-  progress?.("detecting duplication…");
+// Normalization context shared by every file of one analysis.
+interface Scoring {
+  config: EntropyConfig;
+  totalFiles: number;
+  totalLoc: number;
+  // The Entropy Index formula, used per file and again for the summary.
+  blend: (scoreOf: (signal: Signal) => number) => number;
+}
+
+function scoringFor(facts: Map<string, FileFacts>, config: EntropyConfig): Scoring {
+  const ew = config.entropy;
+  // Normalize by weight sums so custom configs (or older configs missing a
+  // newer weight) still yield 0-100 indexes.
+  const entropyWeightSum = SIGNALS.reduce((sum, signal) => sum + ew[`${signal}_weight`], 0) || 1;
+  return {
+    config,
+    totalFiles: Math.max(facts.size - 1, 1),
+    totalLoc: [...facts.values()].reduce((a, f) => a + f.loc, 0) || 1,
+    blend: (scoreOf) =>
+      SIGNALS.reduce((sum, signal) => sum + scoreOf(signal) * ew[`${signal}_weight`], 0) /
+      entropyWeightSum,
+  };
+}
+
+// Pass 4: one file's raw facts → its 0-100 scores.
+function scoreFile(f: FileFacts, { config, totalFiles, totalLoc, blend }: Scoring): FileMetrics {
+  const s = config.scoring;
+  const hw = config.hotspots;
+  const hotspotWeightSum = hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
+  const complexity_score = round1(
+    0.5 * normalize(f.complexity_average, s.complexity_avg_cap) +
+      0.5 * normalize(f.complexity_max, s.complexity_max_cap),
+  );
+  const coupling_score = round1(normalize(f.fan_in + f.fan_out, s.coupling_cap));
+  const churnPerLine = f.lines_changed / Math.max(f.loc, 1);
+  // weighted_commits, not raw commits: a file quiet for a year shouldn't
+  // outrank one actively churning this week just because it has more
+  // total commits (recency-decayed, 90-day half-life — see git.ts).
+  const churn_score = round1(
+    0.5 * normalize(f.weighted_commits, s.churn_commits_cap) +
+      0.5 * normalize(churnPerLine, s.churn_per_line_cap),
+  );
+  const duplication_score = round1(f.duplication_percentage);
+  // Worst single type drives the score: one struct with `state_fields_cap`
+  // optional/bool fields (~2^cap representable states) scores 100.
+  const state_score = round1(normalize(f.max_state_fields, s.state_fields_cap));
+  // Worst single clump drives the score, like state: one type carrying a
+  // `clump_fields_cap`-field flattened entity scores 100.
+  const clumping_score = round1(normalize(f.max_clump_fields, s.clump_fields_cap));
+  const deadcode_score = f.is_orphan ? 100 : 0;
+  const architecture_score = round1(normalize(f.arch_violations, s.arch_violations_cap));
+  const reach_score = round1(
+    normalize((f.transitive_dependents / totalFiles) * 100, s.reach_percent_cap),
+  );
+  // Density, not raw count — a big file earns no extra magic budget.
+  // Test files are exempt: their literals are assertions, not smells
+  // (raw magic_numbers/magic_strings facts are still recorded).
+  const magic_score = isTestFile(f.path)
+    ? 0
+    : round1(
+        normalize(((f.magic_numbers + f.magic_strings) / Math.max(f.loc, 1)) * 100, s.magic_per_100loc_cap),
+      );
+  // Worst single group drives the score, like state/clumping: one guard
+  // re-checked `guard_group_cap` times in siblings scores 100.
+  const guard_score = round1(normalize(f.max_guard_group, s.guard_group_cap));
+  // 0 if tested; if not, scales with how much logic is exposed untested —
+  // a trivial file (complexity_total 0, e.g. pure types) naturally scores
+  // 0 too, since there's nothing there to protect. Entrypoints/tests are
+  // exempt (a CLI dispatcher or the test file itself doesn't need a test).
+  const test_score = f.has_test || f.is_entrypoint
+    ? 0
+    : round1(normalize(f.complexity_total, s.test_complexity_cap));
+  // Additive blend, not multiplicative: a post-blend multiplier either
+  // vanishes once depth+frequency alone clamp near 100, or over-punishes
+  // a single legitimate public PATCH-style field at the low end. See
+  // design doc for the worked examples this formula is tuned against.
+  const semantic_score = round1(
+    Math.min(
+      100,
+      0.55 * normalize(f.max_optional_depth, s.semantic_depth_cap) +
+        0.3 * normalize(f.nested_optional_occurrences, s.semantic_frequency_cap) +
+        0.15 * (f.nested_optional_pub ? 100 : 0),
+    ),
+  );
+  const hotspot_score = round1(
+    (complexity_score * hw.complexity_weight +
+      coupling_score * hw.coupling_weight +
+      churn_score * hw.churn_weight) / hotspotWeightSum,
+  );
+  const why = explainHotspot(f, { complexity_score, coupling_score, churn_score });
+  const scores = {
+    complexity_score, coupling_score, churn_score, duplication_score, state_score,
+    clumping_score, deadcode_score, architecture_score, reach_score, magic_score,
+    guard_score, test_score, semantic_score,
+  };
+  const fileEntropy = blend((signal) => scores[`${signal}_score`]);
+  const entropy_score = round1(fileEntropy);
+  const reachFraction = f.transitive_dependents / totalFiles;
+  return {
+    ...f,
+    ...scores,
+    hotspot_score,
+    why,
+    entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
+    entropy_score,
+    priority_score: round1(entropy_score * reachFraction),
+  };
+}
+
+// The engine proper: scores one tree. It reads files only through `tree`, so
+// the same code measures the working tree and any past commit.
+export function analyzeTree(
+  repo: string,
+  tree: SourceTree,
+  config: EntropyConfig,
+  churnMap: Map<string, FileChurn>,
+  ctx: AnalysisContext,
+): { result: AnalysisResult; memo: BaseMemo } {
+  const { facts, files_skipped, dupInput, memo } = measureFiles(tree, churnMap, ctx);
+
+  ctx.progress?.("graph analysis (orphans, reach, architecture)…");
+  const architecture_violations = linkGraph(facts, config);
+
+  ctx.progress?.("detecting duplication…");
   // Pass 3: duplication across the whole repo
   for (const [path, dup] of detectDuplication(dupInput)) {
     const f = facts.get(path)!;
     f.duplicated_lines = dup.duplicated_lines;
     f.duplicated_blocks = dup.duplicated_blocks;
     f.duplication_percentage = round1(dup.duplication_percentage);
+    f.duplicate_partners = dup.partners;
   }
 
-  // Pass 4: scores
-  const s = config.scoring;
+  const scoring = scoringFor(facts, config);
+  const { blend, totalLoc } = scoring;
   const hw = config.hotspots;
-  const ew = config.entropy;
-  // Normalize by weight sums so custom configs (or older configs missing a
-  // newer weight) still yield 0-100 indexes.
-  const entropyWeightSum =
-    ew.complexity_weight + ew.coupling_weight + ew.churn_weight +
-      ew.duplication_weight + ew.state_weight + ew.clumping_weight +
-      ew.deadcode_weight + ew.architecture_weight + ew.reach_weight +
-      ew.magic_weight + ew.guard_weight + ew.test_weight + ew.semantic_weight || 1;
-  const totalFiles = Math.max(facts.size - 1, 1);
-  const hotspotWeightSum =
-    hw.complexity_weight + hw.coupling_weight + hw.churn_weight || 1;
-  const totalLoc = [...facts.values()].reduce((a, f) => a + f.loc, 0) || 1;
-
-  const files: FileMetrics[] = [...facts.values()].map((f) => {
-    const complexity_score = round1(
-      0.5 * normalize(f.complexity_average, s.complexity_avg_cap) +
-        0.5 * normalize(f.complexity_max, s.complexity_max_cap),
-    );
-    const coupling_score = round1(normalize(f.fan_in + f.fan_out, s.coupling_cap));
-    const churnPerLine = f.lines_changed / Math.max(f.loc, 1);
-    // weighted_commits, not raw commits: a file quiet for a year shouldn't
-    // outrank one actively churning this week just because it has more
-    // total commits (recency-decayed, 90-day half-life — see git.ts).
-    const churn_score = round1(
-      0.5 * normalize(f.weighted_commits, s.churn_commits_cap) +
-        0.5 * normalize(churnPerLine, s.churn_per_line_cap),
-    );
-    const duplication_score = round1(f.duplication_percentage);
-    // Worst single type drives the score: one struct with `state_fields_cap`
-    // optional/bool fields (~2^cap representable states) scores 100.
-    const state_score = round1(normalize(f.max_state_fields, s.state_fields_cap));
-    // Worst single clump drives the score, like state: one type carrying a
-    // `clump_fields_cap`-field flattened entity scores 100.
-    const clumping_score = round1(normalize(f.max_clump_fields, s.clump_fields_cap));
-    const deadcode_score = f.is_orphan ? 100 : 0;
-    const architecture_score = round1(normalize(f.arch_violations, s.arch_violations_cap));
-    const reach_score = round1(
-      normalize((f.transitive_dependents / totalFiles) * 100, s.reach_percent_cap),
-    );
-    // Density, not raw count — a big file earns no extra magic budget.
-    // Test files are exempt: their literals are assertions, not smells
-    // (raw magic_numbers/magic_strings facts are still recorded).
-    const magic_score = isTestFile(f.path)
-      ? 0
-      : round1(
-          normalize(((f.magic_numbers + f.magic_strings) / Math.max(f.loc, 1)) * 100, s.magic_per_100loc_cap),
-        );
-    // Worst single group drives the score, like state/clumping: one guard
-    // re-checked `guard_group_cap` times in siblings scores 100.
-    const guard_score = round1(normalize(f.max_guard_group, s.guard_group_cap));
-    // 0 if tested; if not, scales with how much logic is exposed untested —
-    // a trivial file (complexity_total 0, e.g. pure types) naturally scores
-    // 0 too, since there's nothing there to protect. Entrypoints/tests are
-    // exempt (a CLI dispatcher or the test file itself doesn't need a test).
-    const test_score = f.has_test || f.is_entrypoint
-      ? 0
-      : round1(normalize(f.complexity_total, s.test_complexity_cap));
-    // Additive blend, not multiplicative: a post-blend multiplier either
-    // vanishes once depth+frequency alone clamp near 100, or over-punishes
-    // a single legitimate public PATCH-style field at the low end. See
-    // design doc for the worked examples this formula is tuned against.
-    const semantic_score = round1(
-      Math.min(
-        100,
-        0.55 * normalize(f.max_optional_depth, s.semantic_depth_cap) +
-          0.3 * normalize(f.nested_optional_occurrences, s.semantic_frequency_cap) +
-          0.15 * (f.nested_optional_pub ? 100 : 0),
-      ),
-    );
-    const hotspot_score = round1(
-      (complexity_score * hw.complexity_weight +
-        coupling_score * hw.coupling_weight +
-        churn_score * hw.churn_weight) / hotspotWeightSum,
-    );
-    const why = explainHotspot(f, { complexity_score, coupling_score, churn_score });
-    const fileEntropy =
-      (complexity_score * ew.complexity_weight +
-        coupling_score * ew.coupling_weight +
-        churn_score * ew.churn_weight +
-        duplication_score * ew.duplication_weight +
-        state_score * ew.state_weight +
-        clumping_score * ew.clumping_weight +
-        deadcode_score * ew.deadcode_weight +
-        architecture_score * ew.architecture_weight +
-        reach_score * ew.reach_weight +
-        magic_score * ew.magic_weight +
-        guard_score * ew.guard_weight +
-        test_score * ew.test_weight +
-        semantic_score * ew.semantic_weight) / entropyWeightSum;
-    const entropy_score = round1(fileEntropy);
-    const reachFraction = f.transitive_dependents / totalFiles;
-    return {
-      ...f,
-      complexity_score,
-      coupling_score,
-      churn_score,
-      duplication_score,
-      state_score,
-      clumping_score,
-      deadcode_score,
-      architecture_score,
-      reach_score,
-      magic_score,
-      guard_score,
-      test_score,
-      semantic_score,
-      hotspot_score,
-      why,
-      entropy_contribution: round1(fileEntropy * (f.loc / totalLoc) * 100) / 100,
-      entropy_score,
-      priority_score: round1(entropy_score * reachFraction),
-    };
-  });
+  const files: FileMetrics[] = [...facts.values()].map((f) => scoreFile(f, scoring));
 
   // Summary: LOC-weighted mean per dimension, so per-file entropy
   // contributions sum (up to rounding) to the global entropy index.
   const wmean = (pick: (f: FileMetrics) => number) =>
     round1(files.reduce((a, f) => a + pick(f) * f.loc, 0) / totalLoc);
-  const summary: Summary = files.length
-    ? {
-        complexity: wmean((f) => f.complexity_score),
-        coupling: wmean((f) => f.coupling_score),
-        churn: wmean((f) => f.churn_score),
-        duplication: wmean((f) => f.duplication_score),
-        state: wmean((f) => f.state_score),
-        clumping: wmean((f) => f.clumping_score),
-        deadcode: wmean((f) => f.deadcode_score),
-        architecture: wmean((f) => f.architecture_score),
-        reach: wmean((f) => f.reach_score),
-        magic: wmean((f) => f.magic_score),
-        guard: wmean((f) => f.guard_score),
-        test: wmean((f) => f.test_score),
-        semantic: wmean((f) => f.semantic_score),
-        entropy: 0,
-        p95_file_entropy: percentile(files.map((f) => f.entropy_score), 95),
-        critical_hotspots: files.filter(
-          (f) => f.priority_score >= config.priority.critical_threshold,
-        ).length,
-      }
-    : {
-        complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
-        clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0,
-        guard: 0, test: 0, semantic: 0, entropy: 0, p95_file_entropy: 0, critical_hotspots: 0,
-      };
-  summary.entropy = round1(
-    (summary.complexity * ew.complexity_weight +
-      summary.coupling * ew.coupling_weight +
-      summary.churn * ew.churn_weight +
-      summary.duplication * ew.duplication_weight +
-      summary.state * ew.state_weight +
-      summary.clumping * ew.clumping_weight +
-      summary.deadcode * ew.deadcode_weight +
-      summary.architecture * ew.architecture_weight +
-      summary.reach * ew.reach_weight +
-      summary.magic * ew.magic_weight +
-      summary.guard * ew.guard_weight +
-      summary.test * ew.test_weight +
-      summary.semantic * ew.semantic_weight) / entropyWeightSum,
-  );
+  const signalMeans = Object.fromEntries(
+    SIGNALS.map((signal) => [signal, files.length ? wmean((f) => f[`${signal}_score`]) : 0]),
+  ) as Record<Signal, number>;
+  const summary: Summary = {
+    ...signalMeans,
+    entropy: round1(blend((signal) => signalMeans[signal])),
+    p95_file_entropy: percentile(files.map((f) => f.entropy_score), 95),
+    critical_hotspots: files.filter(
+      (f) => f.priority_score >= config.priority.critical_threshold,
+    ).length,
+  };
 
   const byLanguage: Record<string, number> = {};
   for (const f of files) byLanguage[f.language] = (byLanguage[f.language] ?? 0) + 1;
@@ -502,8 +518,8 @@ export function analyzeRepo(
     .sort((a, b) => b.priority_score - a.priority_score || a.path.localeCompare(b.path))
     .slice(0, hw.limit);
 
-  return {
-    version: 11,
+  const result: AnalysisResult = {
+    version: 12,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,
@@ -513,10 +529,11 @@ export function analyzeRepo(
     files: files.sort((a, b) => a.path.localeCompare(b.path)),
     hotspots,
     priority,
-    cycles: findCycles(depGraph),
+    cycles: findCycles(new Map([...facts].map(([path, f]) => [path, f.dependencies]))),
     architecture_violations,
     trend: { delta: null, velocity: null },
   };
+  return { result, memo };
 }
 
 // Files that legitimately have no importers: entrypoints, tests, configs.
@@ -533,29 +550,6 @@ export function isEntrypoint(path: string): boolean {
   if (/\.(stories|config|setup)\.[\w.]+$/.test(base)) return true;
   if (/\.(sh|bash|zsh)$/.test(base)) return true; // scripts run, not import
   return /(^|\/)(bin|examples|benches|migrations|scripts)\//.test(path);
-}
-
-// Transitive dependents per file: BFS over the inverted dependency graph.
-// Returns the full reachable-dependent SET per file, not just its size —
-// callers that only need the count use `.size`; the reach signal does,
-// but "is any transitive dependent a test file?" needs actual membership.
-export function transitiveReachSets(dependents: Map<string, string[]>): Map<string, Set<string>> {
-  const reach = new Map<string, Set<string>>();
-  for (const start of dependents.keys()) {
-    const seen = new Set<string>([start]);
-    const queue = [start];
-    while (queue.length) {
-      for (const dep of dependents.get(queue.pop()!) ?? []) {
-        if (!seen.has(dep)) {
-          seen.add(dep);
-          queue.push(dep);
-        }
-      }
-    }
-    seen.delete(start);
-    reach.set(start, seen);
-  }
-  return reach;
 }
 
 // First path segment matching a configured layer name decides the layer.

@@ -4,7 +4,7 @@ import { DEFAULT_CONFIG, type EntropyConfig } from "./types";
 import { parseToml, toToml } from "./toml";
 import { ConfigError, validateConfig } from "./validate";
 
-const KNOWN_SECTIONS = ["entropy", "analysis", "architecture", "hotspots", "priority", "scoring"] as const;
+const KNOWN_SECTIONS = ["entropy", "analysis", "architecture", "hotspots", "priority", "gate", "scoring"] as const;
 
 export function entropyDir(repo: string): string {
   return join(repo, ".entropy");
@@ -34,6 +34,7 @@ export function initRepo(repo: string): { created: boolean } {
         architecture: { ...DEFAULT_CONFIG.architecture },
         hotspots: { ...DEFAULT_CONFIG.hotspots },
         priority: { ...DEFAULT_CONFIG.priority },
+        gate: { ...DEFAULT_CONFIG.gate },
         scoring: { ...DEFAULT_CONFIG.scoring },
       }),
   );

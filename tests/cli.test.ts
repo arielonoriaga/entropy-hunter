@@ -1,11 +1,22 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { branchy, tempRepo } from "./support";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const FIXTURES = join(import.meta.dir, "..", "fixtures");
 
-async function run(args: string[]) {
-  const proc = Bun.spawn(["bun", CLI, ...args], { stdout: "pipe", stderr: "pipe" });
+// The CLI's incremental cache goes to a throwaway directory, never the user's.
+const CACHE = mkdtempSync(join(tmpdir(), "entropy-cli-cache-"));
+afterAll(() => rmSync(CACHE, { recursive: true, force: true }));
+
+async function run(args: string[], cwd?: string) {
+  const proc = Bun.spawn(["bun", CLI, ...args], {
+    stdout: "pipe", stderr: "pipe", cwd,
+    env: { ...process.env, ENTROPY_CACHE_DIR: CACHE },
+  });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -22,7 +33,7 @@ describe("entropy CLI (end-to-end)", () => {
     const { stdout, exitCode, stderr } = await run(["report", "--repo", FIXTURES, "--format", "json"]);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
-    expect(parsed.version).toBe(11);
+    expect(parsed.version).toBe(12);
     expect(typeof parsed.summary.entropy).toBe("number");
     expect(stderr).toBe(""); // no progress noise on a non-TTY pipe
   });
@@ -108,5 +119,64 @@ describe("entropy CLI (end-to-end)", () => {
     const { stdout, exitCode } = await run(["health", "--repo", FIXTURES]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("REPOSITORY HEALTH");
+  });
+
+  test("a report larger than the pipe buffer arrives whole", async () => {
+    // console.log on a pipe used to lose everything past 64 KiB.
+    const { stdout, exitCode } = await run(["report", "--repo", join(import.meta.dir, ".."), "--format", "json"]);
+    expect(exitCode).toBe(0);
+    expect(stdout.length).toBeGreaterThan(65536);
+    expect(() => JSON.parse(stdout)).not.toThrow();
+  });
+
+  test("zoom lists modules; zoom <path> prints the ladder; unknown path exits 1", async () => {
+    const modules = await run(["zoom", "--repo", FIXTURES, "--format", "json"]);
+    expect(JSON.parse(modules.stdout).map((m: any) => m.path)).toContain("typescript/coupled");
+    const ladder = await run(["zoom", "--repo", FIXTURES, "typescript/coupled/payments.ts"]);
+    expect(ladder.stdout).toContain("ZOOM typescript/coupled/payments.ts");
+    const missing = await run(["zoom", "--repo", FIXTURES, "nope"]);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("Not an analyzed file or directory");
+  });
+
+  test("the cache lives outside the repository", async () => {
+    await run(["health", "--repo", FIXTURES]);
+    expect(readdirSync(CACHE).some((f) => f.endsWith(".db"))).toBe(true);
+    expect(existsSync(join(FIXTURES, ".entropy"))).toBe(false);
+  });
+});
+
+describe("entropy check (end-to-end)", () => {
+  test("exit 0 on a clean tree, exit 1 with the finding on a regression, exit 0 once accepted", async () => {
+    const repo = tempRepo("entropy-cli-check-");
+    repo.write("src/pricing.ts", branchy("price", 3));
+    repo.commit("base");
+    const clean = await run(["check", "--repo", repo.path]);
+    expect(clean.exitCode).toBe(0);
+    expect(clean.stdout).toContain("PASS");
+
+    repo.write("src/pricing.ts", branchy("price", 20));
+    const failed = await run(["check", "--repo", repo.path, "--format", "json"]);
+    expect(failed.exitCode).toBe(1);
+    const parsed = JSON.parse(failed.stdout);
+    expect(parsed.verdict).toBe("fail");
+    expect(parsed.files[0].findings[0]).toMatchObject({ rule: "complexity", level: "fail" });
+
+    const noReason = await run(["check", "--repo", repo.path, "--accept", "src/pricing.ts"]);
+    expect(noReason.exitCode).toBe(2);
+    expect(noReason.stderr).toContain("--reason");
+
+    const accepted = await run(["check", "--repo", repo.path, "--accept", "src/pricing.ts", "--reason", "lookup table"]);
+    expect(accepted.exitCode).toBe(0);
+    expect(accepted.stdout).toContain("accepted: lookup table");
+    rmSync(repo.path, { recursive: true, force: true });
+  });
+
+  test("outside a git repository it is a clear error (exit 2), not a pass", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "entropy-nogit-"));
+    const { exitCode, stderr } = await run(["check", "--repo", dir]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain("not a git repository");
+    rmSync(dir, { recursive: true, force: true });
   });
 });

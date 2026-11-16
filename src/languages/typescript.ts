@@ -29,12 +29,18 @@ const FN_HEADER = new RegExp(
   "gm",
 );
 const DECISION = /\b(?:if|for|while|case|catch)\b|&&|\|\||\?\?/g;
+const IMPORT_PATTERNS = [
+  /\b(?:import|export)\s[^;'"]*?from\s*['"]([^'"]+)['"]/g,
+  /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+  /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+  /\bimport\s+['"]([^'"]+)['"]/g, // side-effect imports
+];
 
 // The engine calls complexity/normalizedLines back-to-back on the same
 // source — strip once, reuse (1-entry memo).
 let memo: { src: string; out: string } | null = null;
 function stripped(src: string): string {
-  if (memo?.src !== src) memo = { src, out: stripCommentsAndStrings(src) };
+  if (memo?.src !== src) memo = { src, out: stripCommentsAndStrings(src, { regexLiterals: true }) };
   return memo.out;
 }
 
@@ -79,29 +85,39 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
     return complexityHeaders(stripped(source));
   },
 
-  dependencies(source, path, fileSet): DependencyResult {
-    // Strip comments but keep strings — import specifiers live in strings.
-    const src = source;
+  imports(source) {
+    // Import specifiers live in strings, so this reads the raw source.
+    const specs = new Set<string>();
+    for (const pattern of IMPORT_PATTERNS) {
+      for (const m of source.matchAll(pattern)) specs.add(m[1]);
+    }
+    return [...specs];
+  },
+
+  resolve(specs, path, fileSet, aliases): DependencyResult {
     const internal = new Set<string>();
     const external = new Set<string>();
     const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-
-    const specs: string[] = [];
-    for (const m of src.matchAll(/\b(?:import|export)\s[^;'"]*?from\s*['"]([^'"]+)['"]/g)) specs.push(m[1]);
-    for (const m of src.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) specs.push(m[1]);
-    for (const m of src.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) specs.push(m[1]);
-    for (const m of src.matchAll(/\bimport\s+['"]([^'"]+)['"]/g)) specs.push(m[1]); // side-effect imports
 
     for (const spec of specs) {
       if (spec.startsWith(".")) {
         const hit = resolveRelative(spec, dir, fileSet);
         if (hit && hit !== path) internal.add(hit);
-      } else {
-        // Package import; scoped packages keep their scope.
-        // ponytail: tsconfig path aliases unresolved → counted as external.
-        const name = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
-        external.add(name);
+        continue;
       }
+      // A tsconfig/jsconfig path alias (`~/x`, `@/x`) points back into the
+      // repo; only when none resolves is the specifier a package.
+      const aliased = aliases
+        .candidates(spec, path)
+        .map((candidate) => resolveRelative(candidate, "", fileSet))
+        .find((hit) => hit !== null);
+      if (aliased) {
+        if (aliased !== path) internal.add(aliased);
+        continue;
+      }
+      // Package import; scoped packages keep their scope.
+      const name = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
+      external.add(name);
     }
     return { internal: [...internal].sort(), external: [...external].sort() };
   },
@@ -113,7 +129,7 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
   magic(source) {
     return countMagic(
       stripped(source),
-      stripCommentsAndStrings(source, { keepStrings: true }),
+      stripCommentsAndStrings(source, { keepStrings: true, regexLiterals: true }),
       /^\s*(?:export\s+)?const\b/,
     );
   },

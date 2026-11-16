@@ -16,12 +16,21 @@ export interface SnapshotRow {
   files_analyzed: number;
 }
 
+export interface FileCacheRow {
+  content_hash: string;
+  base_json: string;
+  window_hashes: Uint8Array; // bytes of a Float64Array
+}
+
 export class Storage {
   db: Database;
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path, { create: true });
+    // Hooks and interactive runs can overlap on the shared cache: wait
+    // briefly for the other writer instead of failing with SQLITE_BUSY.
+    this.db.exec("PRAGMA busy_timeout = 3000");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,14 +62,17 @@ export class Storage {
       );
       CREATE INDEX IF NOT EXISTS idx_fm_snapshot ON file_metrics(snapshot_id);
       CREATE INDEX IF NOT EXISTS idx_fm_path ON file_metrics(path);
-      CREATE TABLE IF NOT EXISTS file_cache (
+      CREATE TABLE IF NOT EXISTS analysis_cache (
         path TEXT PRIMARY KEY,
         content_hash TEXT NOT NULL,
-        fileset_hash TEXT NOT NULL,
         base_json TEXT NOT NULL,
-        deps_json TEXT NOT NULL
+        window_hashes BLOB NOT NULL
       );
       CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      -- Superseded caches: per-file rows that also keyed on the whole file
+      -- list, and one churn entry per (HEAD, day) that was never evicted.
+      DROP TABLE IF EXISTS file_cache;
+      DELETE FROM kv_cache WHERE key LIKE 'churn:%';
     `);
     // Additive migrations for DBs created before the state signal (v2).
     for (const ddl of [
@@ -119,30 +131,28 @@ export class Storage {
   }
 
   // --- incremental analysis cache -----------------------------------------
-  // base_json (complexity, loc, duplication fingerprint) depends only on file
-  // content; deps_json also depends on the repo file list, since relative
-  // imports resolve against it — hence the separate fileset_hash guard.
+  // Everything cached per file depends only on that file's content (metrics,
+  // import specifiers, duplication fingerprint), so a row is valid for as
+  // long as its content hash matches — adding or removing other files never
+  // invalidates it. Window hashes are a raw Float64Array BLOB: they are the
+  // bulk of the cache, and this way a warm run never parses them.
 
-  getFileCache(path: string) {
-    return this.db
-      .query("SELECT content_hash, fileset_hash, base_json, deps_json FROM file_cache WHERE path = ?")
-      .get(path) as
-      | { content_hash: string; fileset_hash: string; base_json: string; deps_json: string }
-      | null;
+  loadFileCache(): Map<string, FileCacheRow> {
+    const rows = this.db
+      .query("SELECT path, content_hash, base_json, window_hashes FROM analysis_cache")
+      .all() as (FileCacheRow & { path: string })[];
+    return new Map(rows.map((r) => [r.path, r]));
   }
 
-  putFileCaches(
-    rows: { path: string; content_hash: string; fileset_hash: string; base_json: string; deps_json: string }[],
-  ) {
+  putFileCaches(rows: (FileCacheRow & { path: string })[]) {
     const stmt = this.db.query(
-      `INSERT INTO file_cache (path, content_hash, fileset_hash, base_json, deps_json)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO analysis_cache (path, content_hash, base_json, window_hashes)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT(path) DO UPDATE SET content_hash = excluded.content_hash,
-         fileset_hash = excluded.fileset_hash, base_json = excluded.base_json,
-         deps_json = excluded.deps_json`,
+         base_json = excluded.base_json, window_hashes = excluded.window_hashes`,
     );
     this.db.transaction(() => {
-      for (const r of rows) stmt.run(r.path, r.content_hash, r.fileset_hash, r.base_json, r.deps_json);
+      for (const r of rows) stmt.run(r.path, r.content_hash, r.base_json, r.window_hashes);
     })();
   }
 
@@ -151,6 +161,17 @@ export class Storage {
       | { value: string }
       | null;
     return row?.value ?? null;
+  }
+
+  kvDelete(key: string) {
+    this.db.query("DELETE FROM kv_cache WHERE key = ?").run(key);
+  }
+
+  kvKeys(prefix: string): string[] {
+    const rows = this.db
+      .query("SELECT key FROM kv_cache WHERE substr(key, 1, ?) = ?")
+      .all(prefix.length, prefix) as { key: string }[];
+    return rows.map((r) => r.key);
   }
 
   kvSet(key: string, value: string) {

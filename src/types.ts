@@ -31,6 +31,7 @@ export interface FileFacts {
   duplicated_lines: number;
   duplicated_blocks: number;
   duplication_percentage: number;
+  duplicate_partners: string[]; // files sharing the most cloned windows with this one (max 5)
   // State-space exposure: optional/boolean fields multiply representable
   // states (~2^n); illegal-but-representable states breed defensive code.
   type_count: number; // declared types scanned (structs / interfaces / type literals)
@@ -65,9 +66,19 @@ export interface FileFacts {
   magic_strings: number;
   is_entrypoint: boolean; // main/lib/index/bin/tests — legitimately importless
   is_orphan: boolean; // fan_in == 0 and not an entrypoint: likely dead
+  in_cycle: boolean; // part of a dependency cycle (a strongly connected group of 2+ files)
   transitive_dependents: number; // files that can break when this one changes
   arch_violations: number; // imports that point inner→outer against [architecture] layers
 }
+
+// The signals blended into the Entropy Index, in scoring order. Each has a
+// `<name>_score` per file, a `<name>` entry in the summary and a
+// `<name>_weight` in `[entropy]` — this list is the single source for all three.
+export const SIGNALS = [
+  "complexity", "coupling", "churn", "duplication", "state", "clumping",
+  "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
+] as const;
+export type Signal = (typeof SIGNALS)[number];
 
 export interface FileScores {
   complexity_score: number;
@@ -136,7 +147,7 @@ export interface AnalysisResult {
   // v7: guard (shared-condition) signal; v8: test-coverage-presence signal;
   // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary;
   // v10: semantic (nested-optionality) signal; v11/v12: analyzer refinements
-  version: 11;
+  version: 12;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -183,6 +194,13 @@ export interface EntropyConfig {
   // priority_score (entropy_score * reach%) at/above this counts toward
   // summary.critical_hotspots.
   priority: { critical_threshold: number };
+  // `entropy check` thresholds: what counts as a regression in a changed file.
+  gate: {
+    max_file_delta: number; // entropy_score rise (points) that fails an existing file
+    new_file_entropy: number; // entropy_score a brand-new file may not start at
+    function_complexity: number; // a function may not grow past this complexity
+    new_duplicated_lines: number; // newly duplicated lines that fail
+  };
   // Normalization caps: raw value that maps to score 100 (linear, clamped).
   // Engineering heuristics, not universal constants — tune per codebase.
   scoring: {
@@ -228,6 +246,12 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     churn_weight: 0.3,
   },
   priority: { critical_threshold: 20 },
+  gate: {
+    max_file_delta: 5,
+    new_file_entropy: 30,
+    function_complexity: 15,
+    new_duplicated_lines: 6,
+  },
   scoring: {
     complexity_avg_cap: 10,
     complexity_max_cap: 30,

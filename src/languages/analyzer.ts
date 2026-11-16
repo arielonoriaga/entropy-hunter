@@ -1,3 +1,5 @@
+import type { AliasResolver } from "../aliases";
+import { NO_ALIASES } from "../aliases";
 import type { FunctionComplexity } from "../types";
 
 export interface ComplexityResult {
@@ -141,6 +143,12 @@ const JSX_TEXT = />\s*([^<>{}\n][^<>{}\n]*?)\s*</g;
 const CHAINED_COMPARISON =
   /([A-Za-z_$][\w$]*(?:\([^()]*\))?)\s*[!=]==?\s*(['"])(?:\\.|(?!\2).)+\2(?:\s*&&\s*\1\s*[!=]==?\s*(['"])(?:\\.|(?!\3).)+\3){2,}/g;
 
+// A chain of 3 comparisons has 2 of them directly followed by `&&`.
+const MIN_CHAIN_LINKS = 2;
+const COMPARISON_THEN_AND = /[!=]==?\s*(['"])(?:\\.|(?!\1).)+\1\s*&&/g;
+const STRING_BEFORE_ARROW = /['"]\s*=>/;
+const CASE_ARM = /\bcase\s+['"]/g; // STRING_ARM's first alternative on its own
+
 export function countChainedComparisons(source: string): number {
   return (source.match(CHAINED_COMPARISON) ?? []).length;
 }
@@ -178,11 +186,19 @@ export function countMagic(
       if (!ALLOWED_NUMBERS.has(m)) numbers++;
     }
   }
+  // The arm and chain patterns try a match at every quote / identifier, which
+  // dominates a cold run; each is skipped when a cheap necessary condition
+  // (a string directly before `=>`; two comparisons each followed by `&&`)
+  // already rules a match out.
+  const arms = STRING_BEFORE_ARROW.test(stringsView)
+    ? (stringsView.match(STRING_ARM) ?? []).length
+    : (stringsView.match(CASE_ARM) ?? []).length;
+  const chains =
+    (stringsView.match(COMPARISON_THEN_AND) ?? []).length >= MIN_CHAIN_LINKS
+      ? countChainedComparisons(stringsView)
+      : 0;
   const strings =
-    (stringsView.match(STRING_COMPARE) ?? []).length +
-    (stringsView.match(STRING_ARM) ?? []).length +
-    countRepeatedJsxText(stringsView) +
-    countChainedComparisons(stringsView);
+    (stringsView.match(STRING_COMPARE) ?? []).length + arms + countRepeatedJsxText(stringsView) + chains;
   return { numbers, strings };
 }
 
@@ -192,8 +208,14 @@ export interface LanguageAnalyzer {
   language: string;
   detect(path: string): boolean;
   complexity(source: string): ComplexityResult;
+  // Dependencies come in two halves so the expensive one is cacheable:
+  // imports() reads only the file's content (cached per content hash);
+  // resolve() maps those specifiers onto the current file set, which is
+  // cheap and must be redone whenever any file is added or removed.
+  // Specifier encoding is private to each plugin.
+  imports(source: string): string[];
   // fileSet: all repo-relative analyzed paths, for resolving internal deps.
-  dependencies(source: string, path: string, fileSet: Set<string>): DependencyResult;
+  resolve(imports: string[], path: string, fileSet: Set<string>, aliases: AliasResolver): DependencyResult;
   // Lines eligible for duplication detection: normalized, trivia removed.
   normalizedLines(source: string): { line: number; text: string }[];
   // Declared data types and their optional/boolean field counts.
@@ -205,6 +227,17 @@ export interface LanguageAnalyzer {
   // Does this file have a corresponding test (companion file or, for Rust,
   // an inline #[cfg(test)] module)? fileSet enables companion-file lookup.
   testCoverage(source: string, path: string, fileSet: Set<string>): TestCoverage;
+}
+
+// One-shot dependency extraction, for callers without a cache or aliases.
+export function dependenciesOf(
+  analyzer: LanguageAnalyzer,
+  source: string,
+  path: string,
+  fileSet: Set<string>,
+  aliases: AliasResolver = NO_ALIASES,
+): DependencyResult {
+  return analyzer.resolve(analyzer.imports(source), path, fileSet, aliases);
 }
 
 export interface TestCoverage {
@@ -310,14 +343,22 @@ export function complexityFromMarkers(
   };
 }
 
+const UNCOLLAPSED_WHITESPACE = /\s\s|[^\S ]/;
+const HAS_WORD = /\w/;
+
 export function normalizedLinesFrom(stripped: string): { line: number; text: string }[] {
   const result: { line: number; text: string }[] = [];
   const lines = stripped.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].replace(/\s+/g, " ").trim();
-    // Skip blanks and structural noise (lone braces/brackets) — they
-    // duplicate everywhere without meaning anything.
-    if (t.length < 3 || /^[{}()\[\];,]+$/.test(t)) continue;
+    const trimmed = lines[i].trim();
+    if (trimmed.length < 3) continue;
+    // Most lines have only single spaces inside — nothing to collapse.
+    const t = UNCOLLAPSED_WHITESPACE.test(trimmed) ? trimmed.replace(/\s+/g, " ") : trimmed;
+    // Skip lines with nothing but punctuation — lone braces/brackets, and
+    // string literals whose contents were blanked (`" ",`). They repeat
+    // everywhere without meaning anything: any two string tables would
+    // otherwise "duplicate" each other.
+    if (!HAS_WORD.test(t)) continue;
     result.push({ line: i + 1, text: t });
   }
   return result;

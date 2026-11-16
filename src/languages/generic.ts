@@ -14,9 +14,9 @@ const EXT_LANGUAGE: Record<string, string> = {
   c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp",
   cs: "csharp", kt: "kotlin", kts: "kotlin", swift: "swift",
   scala: "scala", dart: "dart", lua: "lua", ex: "elixir", exs: "elixir",
-  sh: "shell", bash: "shell", zsh: "shell", zig: "zig",
+  sh: "shell", bash: "shell", zsh: "shell", zig: "zig", gd: "gdscript",
 };
-const HASH_COMMENT_LANGS = new Set(["python", "ruby", "shell", "elixir"]);
+const HASH_COMMENT_LANGS = new Set(["python", "ruby", "shell", "elixir", "gdscript"]);
 
 // Named function/method declarations across families; files whose functions
 // escape these patterns still get a <module> pseudo-function.
@@ -47,17 +47,26 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     complexity(source) {
       return complexityFromMarkers(strip(source, path), FN_HEADER, DECISION);
     },
-    dependencies(source, from, fileSet): DependencyResult {
+    imports(source) {
+      return [
+        ...new Set(
+          [
+            ...source.matchAll(
+              /^\s*(?:import|from|require|require_relative|include|use)\b[\s(]*['"]?([\w./-]+)/gm,
+            ),
+            ...source.matchAll(/^\s*#include\s+"([\w./-]+)"/gm),
+            // GDScript: `preload("res://x.gd")` / `load(...)` anywhere in a line.
+            ...source.matchAll(/\b(?:preload|load)\(\s*"res:\/\/([\w./-]+)"/g),
+          ].map((m) => m[1]),
+        ),
+      ];
+    },
+
+    resolve(specs, from, fileSet): DependencyResult {
       const internal = new Set<string>();
       const external = new Set<string>();
       const dir = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
       const ownExt = from.split(".").pop()!;
-      const specs = [
-        ...source.matchAll(
-          /^\s*(?:import|from|require|require_relative|include|use)\b[\s(]*['"]?([\w./-]+)/gm,
-        ),
-        ...source.matchAll(/^\s*#include\s+"([\w./-]+)"/gm),
-      ].map((m) => m[1]);
       for (const spec of specs) {
         // Python-style leading dots → same dir; then dots become slashes.
         const rel = spec.replace(/^\.+/, "").replace(/\./g, "/");

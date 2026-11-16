@@ -6,6 +6,13 @@ export class ConfigError extends Error {}
 // a mistyped section/key, a zero/negative cap, or a negative weight all
 // change output with no visible signal today. "make illegal states
 // unrepresentable" applies to config as much as to code.
+// One error per key of `section` that is not a number > 0.
+function nonPositive(name: string, section: Record<string, number>, why = ""): string[] {
+  return Object.entries(section)
+    .filter(([, value]) => !Number.isFinite(value) || value <= 0)
+    .map(([key, value]) => `[${name}] ${key} must be a number > 0 (got ${value})${why}`);
+}
+
 export function validateConfig(cfg: EntropyConfig): void {
   const errors: string[] = [];
 
@@ -25,17 +32,11 @@ export function validateConfig(cfg: EntropyConfig): void {
     if (sum <= 0) errors.push(`[${group}] weights must sum to > 0 (got ${sum})`);
   }
 
-  for (const [key, value] of Object.entries(cfg.scoring)) {
-    if (!Number.isFinite(value) || value <= 0) {
-      errors.push(`[scoring] ${key} must be a number > 0 (got ${value}) — a zero/negative cap silently zeroes that signal`);
-    }
-  }
-
-  if (!Number.isFinite(cfg.priority.critical_threshold) || cfg.priority.critical_threshold <= 0) {
-    errors.push(
-      `[priority] critical_threshold must be a number > 0 (got ${cfg.priority.critical_threshold})`,
-    );
-  }
+  errors.push(
+    ...nonPositive("scoring", cfg.scoring, " — a zero/negative cap silently zeroes that signal"),
+    ...nonPositive("gate", cfg.gate),
+    ...nonPositive("priority", cfg.priority),
+  );
 
   const layers = cfg.architecture.layers.split(",").map((l) => l.trim()).filter(Boolean);
   if (new Set(layers).size !== layers.length) {
