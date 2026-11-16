@@ -2,6 +2,7 @@
   "name": "entropy-hunter",
   "version": "0.1.0",
   "description": "Deterministic software-entropy analyzer CLI for Rust and TypeScript/JavaScript codebases",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "entropy": "src/cli.ts"
