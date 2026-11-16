@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import {
-  SIGNALS, type AnalysisResult, type EntropyConfig, type FileFacts, type FileMetrics,
+  FREE_NESTING, SIGNALS, type AnalysisResult, type EntropyConfig, type FileFacts, type FileMetrics,
   type ArchViolation, type Signal, type Summary,
 } from "./types";
 import { loadAliases } from "./aliases";
@@ -14,7 +14,9 @@ import { detectDuplication, fingerprint, type FileFingerprint } from "./duplicat
 import { bitmask, transitiveReach } from "./graph";
 import type { Storage } from "./storage";
 import { workingTree, type SourceTree } from "./tree";
-import { isTestFile, type ComplexityResult, type LanguageAnalyzer } from "./languages/analyzer";
+import {
+  isTestFile, type ComplexityResult, type LanguageAnalyzer, type Nesting,
+} from "./languages/analyzer";
 
 const analyzable = (files: string[]) => files.filter((f) => analyzerFor(f) !== null).sort();
 
@@ -24,7 +26,7 @@ export function listAnalyzableFiles(repo: string): string[] {
 
 // Linear normalization, clamped to [0, 100]. cap = raw value scoring 100.
 export function normalize(value: number, cap: number): number {
-  if (cap <= 0) return 0;
+  if (cap <= 0 || value <= 0) return 0;
   return Math.min(100, (value / cap) * 100);
 }
 
@@ -70,11 +72,12 @@ interface CachedBase {
   };
   mg: { numbers: number; strings: number };
   gd: { groups: number; max: number; prefix: string };
+  nest: Nesting;
 }
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v14"; // v14: imports cached unresolved; numeric window hashes; punctuation-only lines not fingerprinted
+const CACHE_VERSION = "v15"; // v15: control-flow nesting depth
 
 export type ProgressFn = (message: string) => void;
 
@@ -111,6 +114,7 @@ function measure(analyzer: LanguageAnalyzer, src: string): CachedBase {
     },
     mg: analyzer.magic(src),
     gd: { groups: guards.length, max: worstGuard.count, prefix: worstGuard.prefix },
+    nest: analyzer.nesting(src),
   };
 }
 
@@ -280,6 +284,8 @@ function measureFiles(
       guard_clumps: base.gd.groups,
       max_guard_group: base.gd.max,
       guard_prefix: base.gd.prefix,
+      max_nesting: base.nest.depth,
+      nesting_line: base.nest.line,
       has_test: tc.has_test,
       test_path: tc.test_path,
       max_optional_depth: base.st.maxOptionalDepth,
@@ -438,6 +444,11 @@ function scoreFile(f: FileFacts, { config, totalFiles, totalLoc, blend }: Scorin
         0.15 * (f.nested_optional_pub ? 100 : 0),
     ),
   );
+  // The first FREE_NESTING levels are ordinary code and score 0; from there
+  // linearly up to nesting_depth_cap.
+  const nesting_score = round1(
+    normalize(f.max_nesting - FREE_NESTING, s.nesting_depth_cap - FREE_NESTING),
+  );
   const hotspot_score = round1(
     (complexity_score * hw.complexity_weight +
       coupling_score * hw.coupling_weight +
@@ -447,7 +458,7 @@ function scoreFile(f: FileFacts, { config, totalFiles, totalLoc, blend }: Scorin
   const scores = {
     complexity_score, coupling_score, churn_score, duplication_score, state_score,
     clumping_score, deadcode_score, architecture_score, reach_score, magic_score,
-    guard_score, test_score, semantic_score,
+    guard_score, test_score, semantic_score, nesting_score,
   };
   const fileEntropy = blend((signal) => scores[`${signal}_score`]);
   const entropy_score = round1(fileEntropy);
@@ -519,7 +530,7 @@ export function analyzeTree(
     .slice(0, hw.limit);
 
   const result: AnalysisResult = {
-    version: 12,
+    version: 13,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,

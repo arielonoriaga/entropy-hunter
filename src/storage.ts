@@ -117,6 +117,9 @@ export class Storage {
       "ALTER TABLE file_metrics ADD COLUMN nested_optional_occurrences INTEGER",
       "ALTER TABLE file_metrics ADD COLUMN nested_optional_pub INTEGER",
       "ALTER TABLE file_metrics ADD COLUMN semantic_score REAL",
+      "ALTER TABLE snapshots ADD COLUMN nesting REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE file_metrics ADD COLUMN max_nesting INTEGER",
+      "ALTER TABLE file_metrics ADD COLUMN nesting_score REAL",
     ]) {
       try {
         this.db.exec(ddl);
@@ -190,8 +193,8 @@ export class Storage {
     const insert = this.db.query(`
       INSERT INTO snapshots (repository, commit_hash, timestamp, entropy,
         complexity, coupling, churn, duplication, state, clumping, deadcode,
-        architecture, reach, magic, guard, test, semantic, files_analyzed, report_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        architecture, reach, magic, guard, test, semantic, nesting, files_analyzed, report_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
     `);
     const { summary: s } = result;
@@ -206,7 +209,7 @@ export class Storage {
       result.repository.name, result.repository.commit, result.timestamp,
       s.entropy, s.complexity, s.coupling, s.churn, s.duplication, s.state,
       s.clumping, s.deadcode, s.architecture, s.reach, s.magic, s.guard, s.test,
-      s.semantic, result.files_analyzed, JSON.stringify(slim),
+      s.semantic, s.nesting, result.files_analyzed, JSON.stringify(slim),
     ) as { id: number };
 
     // Named columns: migrated DBs append new columns at the end, so
@@ -224,8 +227,9 @@ export class Storage {
         architecture_score, reach_score, magic_numbers, magic_strings,
         magic_score, weighted_commits, churn_trend, why, guard_clumps,
         max_guard_group, guard_prefix, guard_score, has_test, test_path, test_score,
-        max_optional_depth, nested_optional_occurrences, nested_optional_pub, semantic_score)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        max_optional_depth, nested_optional_occurrences, nested_optional_pub, semantic_score,
+        max_nesting, nesting_score)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const tx = this.db.transaction((files: FileMetrics[]) => {
       for (const f of files) {
@@ -247,6 +251,7 @@ export class Storage {
           f.has_test ? 1 : 0, f.test_path, f.test_score,
           f.max_optional_depth, f.nested_optional_occurrences,
           f.nested_optional_pub ? 1 : 0, f.semantic_score,
+          f.max_nesting, f.nesting_score,
         );
       }
     });

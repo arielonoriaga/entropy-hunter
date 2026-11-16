@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { rustAnalyzer } from "../src/languages/rust";
 import { typescriptAnalyzer } from "../src/languages/typescript";
-import { countChainedComparisons, dependenciesOf } from "../src/languages/analyzer";
+import {
+  braceNesting, countChainedComparisons, dependenciesOf, indentNesting,
+} from "../src/languages/analyzer";
+import { genericAnalyzerFor } from "../src/languages/generic";
 
 const FIX = join(import.meta.dir, "..", "fixtures");
 const read = (p: string) => readFileSync(join(FIX, p), "utf8");
@@ -420,5 +423,39 @@ describe("typescript dependency extraction", () => {
     );
     expect(deps.internal).toEqual(["a/b.ts", "a/c/index.ts", "a/d.ts"]);
     expect(deps.external).toEqual(["@scope/pkg"]);
+  });
+});
+
+describe("control-flow nesting", () => {
+  // [what it shows, source, expected depth, expected line]
+  const BRACES: [string, string, number, number][] = [
+    ["a function body alone is not nesting", "function f() {\n  return 1;\n}", 0, 0],
+    ["blocks inside one another add up", "function f() {\n  for (const a of b) {\n    if (a) {\n      while (c) {}\n    }\n  }\n}", 3, 4],
+    ["else-if chains stay at one level", "if (a) {\n} else if (b) {\n} else {\n}", 1, 1],
+    ["callbacks, object literals and classes do not count", "class A {\n  m() {\n    xs.forEach((x) => {\n      const o = { k: { v: 1 } };\n    });\n  }\n}", 0, 0],
+    ["control flow inside a callback counts from where it is", "xs.map((x) => {\n  if (x) {\n    for (;;) {}\n  }\n});", 2, 3],
+    ["a brace inside the condition is not the block", "if (check({ a: 1 })) {\n  if (b) {}\n}", 2, 2],
+    ["semicolons in a for header do not end its head", "for (let i = 0; i < n; i++) {\n  if (a) {}\n}", 2, 2],
+    ["a multi-line condition still opens a control block", "if (\n  a &&\n  b\n) {\n  if (c) {}\n}", 2, 5],
+    ["a block used as a value counts", "const v = match x {\n  A => {\n    if y {}\n  }\n};", 2, 3],
+    ["Rust `impl Trait for Type` is not a loop", "impl Display for Foo {\n  fn fmt(&self) {\n    if a {}\n  }\n}", 1, 3],
+    ["unbalanced braces do not throw", "}}} if (a) {", 1, 1],
+  ];
+  test.each(BRACES)("braces: %s", (_name, source, depth, line) => {
+    expect(braceNesting(source)).toEqual({ depth, line });
+  });
+
+  test("indentation: a header's body is whatever is indented deeper", () => {
+    const source = "def f(xs):\n    for x in xs:\n        if x:\n            while x:\n                x -= 1\n        else:\n            pass\n    return 1\n";
+    expect(indentNesting(source)).toEqual({ depth: 3, line: 4 });
+    expect(indentNesting("x = 1\ny = 2\n")).toEqual({ depth: 0, line: 0 });
+  });
+
+  test("plugins pick the right reader; syntax without a block shape reports 0", () => {
+    expect(typescriptAnalyzer.nesting('if (a) { if (b) { "}"; } }').depth).toBe(2); // a brace in a string is not a brace
+    expect(rustAnalyzer.nesting("fn f() { loop { if a { } } }").depth).toBe(2);
+    expect(genericAnalyzerFor("a.gd")!.nesting("func f():\n\tif a:\n\t\tfor b in c:\n\t\t\tpass\n").depth).toBe(2);
+    expect(genericAnalyzerFor("a.go")!.nesting("func f() {\n for {\n  if a {\n  }\n }\n}").depth).toBe(2);
+    expect(genericAnalyzerFor("a.rb")!.nesting("if a\n  if b\n  end\nend\n").depth).toBe(0);
   });
 });

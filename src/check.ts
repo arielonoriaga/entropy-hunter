@@ -57,7 +57,8 @@ const ATTENTION = 30;
 // Signals with a dedicated rule above, or whose rise the file did not cause
 // (churn is history; reach and coupling move when OTHER files import this one).
 const UNWARNED_SIGNALS = new Set<Signal>([
-  "complexity", "duplication", "architecture", "churn", "reach", "coupling", "deadcode", "test",
+  "complexity", "duplication", "architecture", "nesting", "churn", "reach", "coupling",
+  "deadcode", "test",
 ]);
 
 interface Sides {
@@ -117,6 +118,21 @@ const RULES: Rule[] = [
     const was = before?.arch_violations ?? 0;
     if (after.arch_violations <= was) return [];
     return [fail("architecture", `inner→outer layer imports ${was} → ${after.arch_violations}`)];
+  },
+
+  function nesting({ before, after, config }) {
+    const limit = config.gate.nesting_depth;
+    const was = before?.max_nesting ?? 0;
+    if (after.max_nesting <= limit || after.max_nesting <= was) return [];
+    const where = [...after.functions].reverse().find((f) => f.line <= after.nesting_line);
+    return [
+      fail(
+        "nesting",
+        `control flow nested ${was} → ${after.max_nesting} deep at line ${after.nesting_line}${
+          where ? ` (in \`${where.name}\`)` : ""
+        } (limit ${limit}) — flatten with guard clauses / early returns`,
+      ),
+    ];
   },
 
   function entropy({ before, after, config }) {

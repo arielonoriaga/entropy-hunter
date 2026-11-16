@@ -202,6 +202,101 @@ export function countMagic(
   return { numbers, strings };
 }
 
+// Deepest control-flow nesting in a file: how many if/for/while/match/try
+// blocks enclose the most deeply buried statement. Blocks that are not
+// control flow — function bodies, object literals, closures, type bodies —
+// do not count, so a method in a class in a module starts at 0.
+export interface Nesting {
+  depth: number;
+  line: number; // where that depth is first reached (0 if depth is 0)
+}
+
+// The text that opens a block is control flow when it starts with one of
+// these keywords — optionally after a closing brace (`} else {`), a loop
+// label, or an assignment/return taking the block's value (`let x = match`).
+const CONTROL_HEAD =
+  /^(?:'\w+\s*:\s*)?(?:(?:let|const|var|return|yield|await)\b[^=]*=?\s*|[\w.[\]]+\s*=\s*)?(?:else\s+)?(?:if|for|while|switch|try|catch|finally|do|else|loop|match)\b/;
+const BLOCK_DELIMITER = /[(){};\n]/g;
+
+// Brace-delimited languages, on stripped source. A block's head is the text
+// since the last statement boundary; parentheses are tracked so that braces
+// inside a condition or an argument list (object literals, callbacks) are
+// neither mistaken for the block nor allowed to cut its head short.
+export function braceNesting(stripped: string): Nesting {
+  // One frame per open brace. `paren`: paren depth when it opened — the
+  // level at which `;` separates statements inside it. `resume`: for a brace
+  // opened inside parentheses, where the interrupted head started.
+  const frames: { control: boolean; paren: number; resume: number }[] = [];
+  let paren = 0;
+  let headStart = 0;
+  let depth = 0;
+  let line = 1;
+  const worst: Nesting = { depth: 0, line: 0 };
+
+  BLOCK_DELIMITER.lastIndex = 0;
+  for (let m = BLOCK_DELIMITER.exec(stripped); m; m = BLOCK_DELIMITER.exec(stripped)) {
+    const at = m.index;
+    const base = frames.length ? frames[frames.length - 1].paren : 0;
+    switch (m[0]) {
+      case "\n":
+        line++;
+        break;
+      case "(":
+        paren++;
+        break;
+      case ")":
+        paren = Math.max(base, paren - 1);
+        break;
+      case ";":
+        if (paren === base) headStart = at + 1;
+        break;
+      case "{": {
+        const inParens = paren > base;
+        const control = !inParens && CONTROL_HEAD.test(stripped.slice(headStart, at).trimStart());
+        frames.push({ control, paren, resume: inParens ? headStart : -1 });
+        headStart = at + 1;
+        if (control && ++depth > worst.depth) {
+          worst.depth = depth;
+          worst.line = line;
+        }
+        break;
+      }
+      case "}": {
+        const frame = frames.pop();
+        headStart = frame && frame.resume !== -1 ? frame.resume : at + 1;
+        if (!frame) break; // unbalanced source: a stray brace still ends a statement
+        if (frame.control) depth--;
+        paren = frame.paren;
+        break;
+      }
+    }
+  }
+  return worst;
+}
+
+const INDENT_CONTROL = /^(?:if|elif|else|for|while|try|except|finally|match)\b.*:\s*$/;
+
+// Indentation-delimited languages (Python, GDScript), on stripped source:
+// a control header's body is every following line indented deeper than it.
+export function indentNesting(stripped: string): Nesting {
+  const open: number[] = []; // indents of the control headers enclosing the current line
+  const worst: Nesting = { depth: 0, line: 0 };
+  const lines = stripped.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i].trimStart();
+    if (!text) continue;
+    const indent = lines[i].length - text.length;
+    while (open.length && open[open.length - 1] >= indent) open.pop();
+    if (!INDENT_CONTROL.test(text)) continue;
+    open.push(indent);
+    if (open.length > worst.depth) {
+      worst.depth = open.length;
+      worst.line = i + 1;
+    }
+  }
+  return worst;
+}
+
 // Common interface every language plugin implements. The core engine only
 // sees this — no language-specific AST leaks past this boundary.
 export interface LanguageAnalyzer {
@@ -224,6 +319,8 @@ export interface LanguageAnalyzer {
   magic(source: string): { numbers: number; strings: number };
   // Sibling ifs sharing a leading guard conjunct — see findSharedConditionGroups.
   sharedConditions(source: string): ConditionGroup[];
+  // Deepest control-flow nesting — see braceNesting / indentNesting.
+  nesting(source: string): Nesting;
   // Does this file have a corresponding test (companion file or, for Rust,
   // an inline #[cfg(test)] module)? fileSet enables companion-file lookup.
   testCoverage(source: string, path: string, fileSet: Set<string>): TestCoverage;

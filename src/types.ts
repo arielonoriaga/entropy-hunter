@@ -49,6 +49,11 @@ export interface FileFacts {
   guard_clumps: number; // groups of 2+ sibling ifs sharing a leading conjunct
   max_guard_group: number; // worst single group's ifs count
   guard_prefix: string; // that group's shared leading condition ("" if none)
+  // Deepest control-flow nesting: if/for/while/match/try blocks inside one
+  // another. Function bodies, closures and literals do not count. Deep
+  // nesting is what guard clauses and early returns flatten.
+  max_nesting: number;
+  nesting_line: number; // where that depth is first reached (0 if none)
   // Test coverage presence (not quality): does this file have a companion
   // test (or, for Rust, an inline #[cfg(test)] module)?
   has_test: boolean;
@@ -76,9 +81,13 @@ export interface FileFacts {
 // `<name>_weight` in `[entropy]` — this list is the single source for all three.
 export const SIGNALS = [
   "complexity", "coupling", "churn", "duplication", "state", "clumping",
-  "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
+  "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic", "nesting",
 ] as const;
 export type Signal = (typeof SIGNALS)[number];
+
+// Control flow this deep is ordinary (a loop with a condition in it) and
+// scores 0; the nesting score rises linearly from here to nesting_depth_cap.
+export const FREE_NESTING = 2;
 
 export interface FileScores {
   complexity_score: number;
@@ -96,6 +105,7 @@ export interface FileScores {
   // with how much untested complexity/logic this file exposes.
   test_score: number;
   semantic_score: number;
+  nesting_score: number;
   // One sentence naming the dominant raw fact behind hotspot_score, so an
   // agent (or human) doesn't have to reverse-engineer which signal fired.
   why: string;
@@ -127,6 +137,7 @@ export interface Summary {
   guard: number;
   test: number;
   semantic: number;
+  nesting: number;
   // 95th percentile of per-file entropy_score — "how bad are the worst
   // files", independent of the LOC-weighting that entropy_index uses.
   p95_file_entropy: number;
@@ -147,7 +158,7 @@ export interface AnalysisResult {
   // v7: guard (shared-condition) signal; v8: test-coverage-presence signal;
   // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary;
   // v10: semantic (nested-optionality) signal; v11/v12: analyzer refinements
-  version: 12;
+  version: 13;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -179,6 +190,7 @@ export interface EntropyConfig {
     guard_weight: number;
     test_weight: number;
     semantic_weight: number;
+    nesting_weight: number;
   };
   analysis: { since: string };
   // Layer names inner→outer, matched against path segments. A file in an
@@ -200,6 +212,7 @@ export interface EntropyConfig {
     new_file_entropy: number; // entropy_score a brand-new file may not start at
     function_complexity: number; // a function may not grow past this complexity
     new_duplicated_lines: number; // newly duplicated lines that fail
+    nesting_depth: number; // control-flow nesting may not grow past this depth
   };
   // Normalization caps: raw value that maps to score 100 (linear, clamped).
   // Engineering heuristics, not universal constants — tune per codebase.
@@ -218,6 +231,7 @@ export interface EntropyConfig {
     test_complexity_cap: number; // complexity_total of an untested file scoring 100
     semantic_depth_cap: number; // max_optional_depth in ONE file scoring 100
     semantic_frequency_cap: number; // nested_optional_occurrences in ONE file scoring 100
+    nesting_depth_cap: number; // max_nesting scoring 100; the first FREE_NESTING levels score 0
   };
 }
 
@@ -236,6 +250,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     guard_weight: 0.05,
     test_weight: 0.1,
     semantic_weight: 0.05,
+    nesting_weight: 0.05,
   },
   analysis: { since: "30d" },
   architecture: { layers: "domain, application, infrastructure, api" },
@@ -251,6 +266,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     new_file_entropy: 30,
     function_complexity: 15,
     new_duplicated_lines: 6,
+    nesting_depth: 4,
   },
   scoring: {
     complexity_avg_cap: 10,
@@ -267,5 +283,6 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     test_complexity_cap: 20,
     semantic_depth_cap: 3,
     semantic_frequency_cap: 8,
+    nesting_depth_cap: 6,
   },
 };

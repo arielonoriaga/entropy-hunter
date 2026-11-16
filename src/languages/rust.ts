@@ -1,6 +1,6 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
+  braceNesting, complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
   findSharedConditionGroups, isTestFile, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
@@ -139,6 +139,10 @@ export const rustAnalyzer: LanguageAnalyzer = {
   sharedConditions(source) {
     // Rust `if` has no parens: `if a && b {`.
     return findSharedConditionGroups(stripped(source), /^(\s*)if\s+(.+?)\s*\{\s*$/);
+  },
+
+  nesting(source) {
+    return braceNesting(stripped(source));
   },
 
   testCoverage(source, path) {

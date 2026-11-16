@@ -41,6 +41,7 @@ export const SIGNAL_LABELS: Record<Signal, string> = {
   complexity: "Complexity", coupling: "Coupling", churn: "Churn", duplication: "Duplication",
   state: "State", clumping: "Clumping", deadcode: "Dead code", architecture: "Architecture",
   reach: "Reach", magic: "Magic", guard: "Guard", test: "Test", semantic: "Semantic",
+  nesting: "Nesting",
 };
 
 // Same 30/70 split used for per-file severity elsewhere, collapsed to the

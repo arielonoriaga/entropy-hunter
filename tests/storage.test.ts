@@ -63,6 +63,20 @@ describe("snapshot persistence", () => {
     reopened.close();
   });
 
+  test("nesting columns are written with the snapshot", () => {
+    const db = new Storage(join(dir, "nesting.db"));
+    const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);
+    const id = db.saveSnapshot(result);
+    const deepest = result.files.reduce((a, b) => (b.max_nesting > a.max_nesting ? b : a));
+    const row = db.db
+      .query("SELECT max_nesting, nesting_score FROM file_metrics WHERE snapshot_id = ? AND path = ?")
+      .get(id, deepest.path) as { max_nesting: number; nesting_score: number };
+    expect(row).toEqual({ max_nesting: deepest.max_nesting, nesting_score: deepest.nesting_score });
+    const snapshot = db.db.query("SELECT nesting FROM snapshots WHERE id = ?").get(id) as { nesting: number };
+    expect(snapshot.nesting).toBe(result.summary.nesting);
+    db.close();
+  });
+
   test("semantic signal columns survive a save/reload round-trip", () => {
     const db = new Storage(join(dir, "semantic.db"));
     const result = analyzeRepo(FIXTURES, DEFAULT_CONFIG, DEFAULT_CONFIG.analysis.since, null, null);

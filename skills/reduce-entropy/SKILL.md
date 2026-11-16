@@ -81,7 +81,9 @@ it will move. If you cannot name the fact, you have not found the cause yet.
    facade, churn on a feature in active development — pick the next target
    and note why this one was skipped.
 5. **Refactor at the owning level**, smallest coherent change:
-   - complexity → extract functions, guard clauses, replace nested branching
+   - complexity → extract functions, replace branching with data or polymorphism
+   - nesting → guard clauses and early returns first; extract the inner block
+     only if it is still deep after that
    - coupling → invert dependencies, split the module along its seams
    - duplication → extract at the 2nd proven duplicate; `duplicate_partners`
      in `entropy file` names where the copies are

@@ -1,6 +1,6 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  complexityFromMarkers, countMagic, findSharedConditionGroups, isTestFile, normalizedLinesFrom,
+  braceNesting, complexityFromMarkers, countMagic, indentNesting, findSharedConditionGroups, isTestFile, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
 
@@ -16,6 +16,10 @@ const EXT_LANGUAGE: Record<string, string> = {
   scala: "scala", dart: "dart", lua: "lua", ex: "elixir", exs: "elixir",
   sh: "shell", bash: "shell", zsh: "shell", zig: "zig", gd: "gdscript",
 };
+const INDENT_LANGS = new Set(["python", "gdscript"]);
+const BRACE_LANGS = new Set([
+  "go", "java", "php", "c", "cpp", "csharp", "kotlin", "swift", "scala", "dart", "zig",
+]);
 const HASH_COMMENT_LANGS = new Set(["python", "ruby", "shell", "elixir", "gdscript"]);
 
 // Named function/method declarations across families; files whose functions
@@ -103,6 +107,12 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
         /^(\s*)if\s*\(?(.+?)\)?\s*[{:]\s*$/,
         /&&|\band\b/,
       );
+    },
+    nesting(source) {
+      const stripped = strip(source, path);
+      if (INDENT_LANGS.has(language)) return indentNesting(stripped);
+      // `end`-delimited and shell syntax has no block shape to follow here.
+      return BRACE_LANGS.has(language) ? braceNesting(stripped) : { depth: 0, line: 0 };
     },
     // Field-shape analysis needs typed syntax knowledge — dedicated plugins only.
     stateSpace: () => [],

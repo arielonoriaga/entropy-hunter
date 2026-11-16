@@ -1,7 +1,7 @@
 import pc from "picocolors";
-import type { AnalysisResult, FileMetrics } from "./types";
+import { FREE_NESTING, SIGNALS, type AnalysisResult, type FileMetrics } from "./types";
 import type { CheckResult, CheckedFile } from "./check";
-import type { Color, HealthReport } from "./health";
+import { SIGNAL_LABELS, type Color, type HealthReport } from "./health";
 import type { ModuleRollup, SignalScore, ZoomResult } from "./zoom";
 import { withDeltas, type SnapshotRow } from "./storage";
 
@@ -24,6 +24,11 @@ export function trendLabel(delta: number | null): string {
   return `STABLE (${delta >= 0 ? "+" : ""}${fmt(delta)})`;
 }
 
+// "Label:" padded so every summary score starts in the same column.
+const LABEL_WIDTH = 14;
+const signalLines = (r: AnalysisResult) =>
+  SIGNALS.map((signal) => `${`${SIGNAL_LABELS[signal]}:`.padEnd(LABEL_WIDTH)}${fmt(r.summary[signal])}`).join("\n");
+
 export function renderAnalysis(r: AnalysisResult): string {
   const langs = Object.entries(r.files_by_language)
     .map(([l, n]) => `${l[0].toUpperCase() + l.slice(1)} files: ${n}`)
@@ -38,19 +43,7 @@ Commit: ${r.repository.commit}
 Files analyzed: ${r.files_analyzed}${r.files_skipped.length ? ` (${r.files_skipped.length} skipped — unreadable)` : ""}
 ${langs}
 
-Complexity:   ${fmt(r.summary.complexity)}
-Coupling:     ${fmt(r.summary.coupling)}
-Churn:        ${fmt(r.summary.churn)}
-Duplication:  ${fmt(r.summary.duplication)}
-State:        ${fmt(r.summary.state)}
-Clumping:     ${fmt(r.summary.clumping)}
-Dead code:    ${fmt(r.summary.deadcode)}
-Architecture: ${fmt(r.summary.architecture)}
-Reach:        ${fmt(r.summary.reach)}
-Magic:        ${fmt(r.summary.magic)}
-Guard:        ${fmt(r.summary.guard)}
-Test:         ${fmt(r.summary.test)}
-Semantic:     ${fmt(r.summary.semantic)}
+${signalLines(r)}
 
 Entropy Index: ${severity(r.summary.entropy)(fmt(r.summary.entropy))}
 P95 File Entropy: ${severity(r.summary.p95_file_entropy)(fmt(r.summary.p95_file_entropy))}
@@ -208,6 +201,13 @@ Guard clumps
       : ""
   }
 
+Nesting
+  deepest control flow: ${f.max_nesting}${
+    f.max_nesting > FREE_NESTING
+      ? ` (line ${f.nesting_line}) — flatten with guard clauses / early returns`
+      : ""
+  }
+
 Test coverage
   ${f.has_test ? `covered (${f.test_path})` : "NO TEST FOUND"}
 
@@ -290,19 +290,7 @@ Commit \`${r.repository.commit}\` · ${r.timestamp.slice(0, 10)} · ${r.files_an
 | **Entropy Index** | **${fmt(r.summary.entropy)}** |
 | P95 File Entropy | ${fmt(r.summary.p95_file_entropy)} |
 | Critical Hotspots | ${r.summary.critical_hotspots} |
-| Complexity | ${fmt(r.summary.complexity)} |
-| Coupling | ${fmt(r.summary.coupling)} |
-| Churn | ${fmt(r.summary.churn)} |
-| Duplication | ${fmt(r.summary.duplication)} |
-| State | ${fmt(r.summary.state)} |
-| Clumping | ${fmt(r.summary.clumping)} |
-| Dead code | ${fmt(r.summary.deadcode)} |
-| Architecture | ${fmt(r.summary.architecture)} |
-| Reach | ${fmt(r.summary.reach)} |
-| Magic | ${fmt(r.summary.magic)} |
-| Guard | ${fmt(r.summary.guard)} |
-| Test | ${fmt(r.summary.test)} |
-| Semantic | ${fmt(r.summary.semantic)} |
+${SIGNALS.map((signal) => `| ${SIGNAL_LABELS[signal]} | ${fmt(r.summary[signal])} |`).join("\n")}
 
 Trend: ${trendLabel(r.trend.delta)}
 

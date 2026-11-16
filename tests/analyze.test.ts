@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { analyzeRepo, analyzeTree, findCycles, normalize } from "../src/analyze";
 import { typescriptAnalyzer } from "../src/languages/typescript";
 import { detectDuplication, fingerprint, WINDOW } from "../src/duplication";
-import { DEFAULT_CONFIG } from "../src/types";
+import { DEFAULT_CONFIG, SIGNALS } from "../src/types";
 import { countMagic, countRepeatedJsxText } from "../src/languages/analyzer";
 import { stripCommentsAndStrings } from "../src/languages/strip";
 
@@ -247,10 +247,7 @@ describe("analyzeRepo on fixtures", () => {
   test("entropy index is the weight-sum-normalized combination of summary scores", () => {
     const { summary } = result;
     const w = DEFAULT_CONFIG.entropy;
-    const keys = [
-      "complexity", "coupling", "churn", "duplication", "state",
-      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
-    ] as const;
+    const keys = SIGNALS;
     const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     const expected =
       keys.reduce((s, k) => s + (summary as any)[k] * (w as any)[`${k}_weight`], 0) / wsum;
@@ -278,15 +275,13 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 12)", () => {
-    expect(result.version).toBe(12);
+  test("JSON schema shape (version 13)", () => {
+    expect(result.version).toBe(13);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);
     for (const k of [
-      "entropy", "complexity", "coupling", "churn", "duplication",
-      "state", "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
-      "p95_file_entropy", "critical_hotspots",
+      "entropy", ...SIGNALS, "p95_file_entropy", "critical_hotspots",
     ]) {
       expect(typeof (result.summary as any)[k]).toBe("number");
     }
@@ -311,6 +306,7 @@ describe("analyzeRepo on fixtures", () => {
       "magic_numbers", "magic_strings", "magic_score",
       "guard_clumps", "max_guard_group", "guard_score", "test_score",
       "max_optional_depth", "nested_optional_occurrences", "semantic_score",
+      "max_nesting", "nesting_line", "nesting_score",
     ]) {
       expect(typeof (f as any)[k]).toBe("number");
     }
@@ -322,10 +318,7 @@ describe("analyzeRepo on fixtures", () => {
 
   test("entropy_score matches the same weighted formula as summary.entropy, per file", () => {
     const w = DEFAULT_CONFIG.entropy;
-    const keys = [
-      "complexity", "coupling", "churn", "duplication", "state",
-      "clumping", "deadcode", "architecture", "reach", "magic", "guard", "test", "semantic",
-    ] as const;
+    const keys = SIGNALS;
     const wsum = keys.reduce((s, k) => s + (w as any)[`${k}_weight`], 0);
     for (const f of result.files) {
       const expected =
@@ -428,5 +421,33 @@ describe("path aliases end to end", () => {
     const tree = { files: Object.keys(files), read: (p: string) => files[p] ?? null };
     const { result } = analyzeTree(".", tree, DEFAULT_CONFIG, new Map(), { storage: null, memo: null, progress: null });
     expect(result.files.map((f) => [f.path, f.in_cycle])).toEqual([["a.ts", true], ["b.ts", true], ["c.ts", false]]);
+  });
+});
+
+describe("nesting signal", () => {
+  const scoreAt = (depth: number) => {
+    const body = Array.from({ length: depth }, (_, i) => `${"  ".repeat(i + 1)}if (x > ${i}) {`).join("\n");
+    const close = Array.from({ length: depth }, (_, i) => `${"  ".repeat(depth - i)}}`).join("\n");
+    const files: Record<string, string> = { "deep.ts": `export function f(x: number) {\n${body}\n${close}\n}\n` };
+    const tree = { files: Object.keys(files), read: (p: string) => files[p] ?? null };
+    const { result } = analyzeTree(".", tree, DEFAULT_CONFIG, new Map(), { storage: null, memo: null, progress: null });
+    return result.files[0];
+  };
+
+  test("ordinary depth is free; the score climbs linearly from there to the cap", () => {
+    expect([0, 2, 3, 4, 6, 9].map((d) => scoreAt(d).nesting_score)).toEqual([0, 0, 25, 50, 100, 100]);
+  });
+
+  test("the raw fact carries the depth and the line it is reached on", () => {
+    expect(scoreAt(4)).toMatchObject({ max_nesting: 4, nesting_line: 5 });
+    expect(scoreAt(0)).toMatchObject({ max_nesting: 0, nesting_line: 0 });
+  });
+
+  test("it is part of the summary and of the entropy index", () => {
+    const calm = scoreAt(1);
+    const deep = scoreAt(6);
+    // Same complexity-per-branch shape; only the nesting differs in kind.
+    expect(deep.nesting_score - calm.nesting_score).toBe(100);
+    expect(deep.entropy_score).toBeGreaterThan(calm.entropy_score);
   });
 });

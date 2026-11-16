@@ -1,6 +1,6 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
+  braceNesting, complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
   findSharedConditionGroups, isTestFile, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 
@@ -136,6 +136,10 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
 
   sharedConditions(source) {
     return findSharedConditionGroups(stripped(source), /^(\s*)if\s*\((.+)\)\s*\{?\s*$/);
+  },
+
+  nesting(source) {
+    return braceNesting(stripped(source));
   },
 
   testCoverage(_source, path, fileSet) {

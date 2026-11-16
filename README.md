@@ -89,7 +89,8 @@ not constants of nature:
 | guard | `norm(worst shared-guard group, 4)` — sibling `if`s at the same indent sharing a leading `&&` conjunct (`if (isLoggedIn() && a())` next to `if (isLoggedIn() && b())`): the guard is re-checked N times instead of once with nested/early-return branches inside ("Consolidate Conditional Expression") |
 | test | 0 if tested (or an entrypoint, or has no functions to protect), else `norm(complexity_total, 20)` — untested complexity is worse than untested trivia. Presence, not quality: Rust's inline `#[cfg(test)]`, TS/Go/Python companion-file conventions, or a transitive fallback (does ANY file that eventually imports this one turn out to be a test?) |
 | semantic | `0.55·norm(max_optional_depth, 3) + 0.30·norm(nested_optional_occurrences, 8) + 0.15·(any pub struct nested? 100 : 0)` — Rust `Option<Option<T>>` (and deeper) struct fields. Not automatically bad: a `pub struct UpdateUser { name: Option<Option<String>> }` can be a legitimate PATCH tri-state (`None`=don't touch, `Some(None)`=clear, `Some(Some(v))`=set) — the signal surfaces where nesting concentrates (deep, frequent, public) rather than flagging any single occurrence as wrong. Explicit state enums (`enum FieldUpdate<T> { Unchanged, Clear, Set(T) }`) are exempt — only `struct` bodies are scanned |
-| entropy index | weighted mean of the thirteen scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05, magic .05, guard .05, test .10, semantic .05 — `[entropy]`) |
+| nesting | `norm(max_nesting − 2, 6 − 2)` — the deepest control-flow nesting in the file: `if`/`for`/`while`/`match`/`switch`/`try` blocks inside one another. Function bodies, closures, object literals and type bodies do not count, so a method in a class starts at 0. The first two levels are ordinary code (a loop with a condition in it) and score 0; depth 3 → 25, 4 → 50, `nesting_depth_cap` (6) → 100. Distinct from complexity: ten flat `if`s and four nested ones can count the same decisions, but only the nested ones make every line depend on four conditions at once — what guard clauses and early returns flatten. Brace languages and indentation languages (Python, GDScript) are measured; `end`-delimited ones (Ruby, Elixir, Lua) and shell report 0 |
+| entropy index | weighted mean of the fourteen scores, normalized by the weight sum (defaults: complexity .20, coupling .20, churn .15, duplication .10, state .10, clumping .10, deadcode .05, architecture .05, reach .05, magic .05, guard .05, test .10, semantic .05, nesting .05 — `[entropy]`) |
 
 Churn itself is recency-weighted (90-day exponential half-life, so a file
 quiet for a year doesn't outrank one actively churning this week) and
@@ -145,7 +146,7 @@ fixed, auditable rule table, not free-form judgment.
 | Critical Hotspots | 0 (NONE) | 1–4 (SOME) | ≥ 5 (HIGH) |
 | Trend | STABLE or FALLING | — | RISING (delta > 0.5) |
 
-**Attention list** — any of the 13 summary signals (complexity…semantic) ≥ 30,
+**Attention list** — any of the 14 summary signals (complexity…nesting) ≥ 30,
 sorted descending. **Structural list** — `cycles`/`architecture_violations`
 counts: HEALTHY at 0, ATTENTION when present (a single cycle is already
 worth knowing about, not graded).
@@ -192,6 +193,7 @@ call for the changed files), so a check costs about two warm runs.
 |---|---|---|
 | `complexity` | fail | a function is above `function_complexity` (15) **and** higher than it was. A function that appears while an at-least-as-complex one shrinks or disappears is a rename/extraction, not new complexity |
 | `duplication` | fail | duplicated lines rose by ≥ `new_duplicated_lines` (6) — names the partner files |
+| `nesting` | fail | control flow is nested deeper than `nesting_depth` (4) **and** deeper than it was — names the line and function |
 | `cycle` | fail | the file is on a dependency cycle and was not before |
 | `architecture` | fail | inner→outer layer imports rose |
 | `entropy` | fail | `entropy_score` rose by ≥ `max_file_delta` (5), or a brand-new file starts at ≥ `new_file_entropy` (30) |
@@ -277,7 +279,7 @@ exact; complexity and dependencies are regex-approximate; state/clumping
 are skipped. A dedicated plugin upgrades a language from approximate to
 precise without touching the engine.
 
-The JSON report (`report --format json`, `"version": 12`) plus the SQLite
+The JSON report (`report --format json`, `"version": 13`) plus the SQLite
 schema (`snapshots`, `file_metrics`) carry everything a future agent needs
 for `get_repository_summary`, `get_file_metrics`, `get_hotspots`,
 `get_history`, `get_dependencies` (per-file internal deps are recomputed on

@@ -97,6 +97,20 @@ describe("entropy check", () => {
     expect(rulesOf(check(), "src/domain/order.ts")).toContain("architecture");
   });
 
+  test("nesting control flow past the limit fails, naming the line and function; existing depth does not", () => {
+    const nested = (depth: number) =>
+      `export function route(x: number) {\n${"if (x) {\n".repeat(depth)}${"}\n".repeat(depth)}  return x;\n}\n`;
+    repo.write("src/route.ts", nested(5));
+    const finding = fileOf(check(), "src/route.ts").findings.find((f) => f.rule === "nesting")!;
+    expect(finding.level).toBe("fail");
+    expect(finding.message).toContain("0 → 5 deep at line 6");
+    expect(finding.message).toContain("`route`");
+
+    repo.commit("deep nesting lands");
+    repo.write("src/route.ts", nested(5) + "export const one = 1;\n");
+    expect(rulesOf(check(), "src/route.ts")).not.toContain("nesting");
+  });
+
   test("a renamed file is compared with its old self, not treated as new", () => {
     repo.write("src/legacy.ts", branchy("legacy", 25));
     repo.commit("legacy lands");

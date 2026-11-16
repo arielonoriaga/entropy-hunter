@@ -1,4 +1,4 @@
-import type { EntropyConfig } from "./types";
+import { FREE_NESTING, type EntropyConfig } from "./types";
 
 export class ConfigError extends Error {}
 
@@ -37,6 +37,12 @@ export function validateConfig(cfg: EntropyConfig): void {
     ...nonPositive("gate", cfg.gate),
     ...nonPositive("priority", cfg.priority),
   );
+
+  if (cfg.scoring.nesting_depth_cap <= FREE_NESTING) {
+    errors.push(
+      `[scoring] nesting_depth_cap must be > ${FREE_NESTING} (got ${cfg.scoring.nesting_depth_cap}) — nesting up to ${FREE_NESTING} deep scores 0`,
+    );
+  }
 
   const layers = cfg.architecture.layers.split(",").map((l) => l.trim()).filter(Boolean);
   if (new Set(layers).size !== layers.length) {

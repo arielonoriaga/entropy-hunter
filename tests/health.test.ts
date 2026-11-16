@@ -92,11 +92,11 @@ describe("computeHealth — topline bands", () => {
 const ZERO_SUMMARY = {
   entropy: 0, complexity: 0, coupling: 0, churn: 0, duplication: 0, state: 0,
   clumping: 0, deadcode: 0, architecture: 0, reach: 0, magic: 0, guard: 0, test: 0,
-  semantic: 0, p95_file_entropy: 0, critical_hotspots: 0,
+  semantic: 0, nesting: 0, p95_file_entropy: 0, critical_hotspots: 0,
 };
 
 describe("computeHealth — attention list", () => {
-  test("lists only the 13 summary signals scoring >= 30, sorted descending", () => {
+  test("lists only the summary signals scoring >= 30, sorted descending", () => {
     const h = computeHealth(
       withOverrides({ summary: { ...ZERO_SUMMARY, churn: 45, reach: 60, semantic: 35, state: 10, complexity: 5 } }),
     );
