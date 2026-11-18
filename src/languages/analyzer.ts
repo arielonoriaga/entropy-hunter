@@ -384,20 +384,25 @@ export function extractBraceBlocks(
 
 export type FunctionSpans =
   | { kind: "braces" }
-  | { kind: "indent"; lines_inside_strings: ReadonlySet<number> };
+  | { kind: "indent"; lines_inside_strings: ReadonlySet<number>; comment_columns: ReadonlyMap<number, number> };
 
 export const BRACE_SPANS: FunctionSpans = { kind: "braces" };
-export const INDENT_SPANS: FunctionSpans = { kind: "indent", lines_inside_strings: new Set() };
+export const INDENT_SPANS: FunctionSpans = { kind: "indent", lines_inside_strings: new Set(), comment_columns: new Map() };
+type IndentSpans = Extract<FunctionSpans, { kind: "indent" }>;
 
 const CONTINUES_SIGNATURE = /^\s*(?:[)\]>{=:,.|&]|where\b|->)/;
 const CLOSES_BLOCK = /^\s*(?:\}|end\b)/;
 const indentOf = (line: string) => line.length - line.trimStart().length;
 
-function indentSpanEndLine(lines: string[], header: number, insideStrings: ReadonlySet<number>): number {
+function indentSpanEndLine(lines: string[], header: number, spans: IndentSpans): number {
   const headerIndent = indentOf(lines[header]);
   let lastInside = header;
   for (let ln = header + 1; ln < lines.length; ln++) {
-    if (!lines[ln].trim() || insideStrings.has(ln + 1)) continue;
+    if (spans.lines_inside_strings.has(ln + 1)) continue;
+    if (!lines[ln].trim()) {
+      if ((spans.comment_columns.get(ln + 1) ?? -1) > headerIndent) lastInside = ln;
+      continue;
+    }
     const indent = indentOf(lines[ln]);
     if (indent > headerIndent || CONTINUES_SIGNATURE.test(lines[ln])) {
       lastInside = ln;
@@ -476,12 +481,26 @@ function nameEnd(header: RegExpExecArray): number {
   return nameSpan ? nameSpan[1] : header.index + header[0].length;
 }
 
+const LESS_THAN = "<", GREATER_THAN = ">", ARROW_HEAD = "=";
+
+function afterTypeParameters(stripped: string, from: number): number {
+  let at = from;
+  while (stripped[at] === " " || stripped[at] === "\t") at++;
+  if (stripped[at] !== LESS_THAN) return from;
+  let depth = 0;
+  for (; at < stripped.length && stripped[at] !== LINE_BREAK; at++) {
+    if (stripped[at] === LESS_THAN) depth++;
+    else if (stripped[at] === GREATER_THAN && stripped[at - 1] !== ARROW_HEAD && --depth === 0) return at + 1;
+  }
+  return from;
+}
+
 function spanEndLine(source: SpanSource, spans: FunctionSpans, ln: number, header: RegExpExecArray, hasBody: boolean): number {
-  if (spans.kind === "indent") return indentSpanEndLine(source.lines, ln, spans.lines_inside_strings);
+  if (spans.kind === "indent") return indentSpanEndLine(source.lines, ln, spans);
   source.braces ??= matchingBraces(source.stripped);
   const lineStart = source.lineStarts[ln];
   const end = hasBody
-    ? blockBodyEnd(source.stripped, lineStart + nameEnd(header), source.braces)
+    ? blockBodyEnd(source.stripped, afterTypeParameters(source.stripped, lineStart + nameEnd(header)), source.braces)
     : expressionBodyEnd(source.stripped, lineStart + header.index + header[0].length);
   return Math.max(ln + 1, lineAt(source.lineStarts, Math.min(end, source.stripped.length - 1)));
 }

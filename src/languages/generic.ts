@@ -26,30 +26,37 @@ const HASH_COMMENT_LANGS = new Set(["python", "ruby", "shell", "elixir", "gdscri
 // Named function/method declarations across families; files whose functions
 // escape these patterns still get a <module> pseudo-function.
 const FN_HEADER =
-  /\b(?:def|func|fn|function|sub|proc)\s+\(?[\w()[\] *]*?([A-Za-z_]\w*)\s*[({]/g;
+  /\b(?:def|func|fn|function|sub|proc)\s+\(?[\w()[\] *]*?([A-Za-z_]\w*)\s*[({]/dg;
 const FN_HEADER_BY_LANGUAGE = new Map([
-  ["shell", new RegExp(`${FN_HEADER.source}|^\\s*([A-Za-z_][\\w:-]*)\\s*\\(\\)\\s*(?:\\{|\\(|$)`, "g")],
+  ["shell", new RegExp(`${FN_HEADER.source}|^\\s*([A-Za-z_][\\w:-]*)\\s*\\(\\)\\s*(?:\\{|\\(|$)`, "dg")],
 ]);
+const DIALECT_BY_LANGUAGE = new Map<string, Dialect>([["shell", "shell"], ["python", "python"]]);
 const dialectOf = (language: string): Dialect =>
-  language === "shell" ? "shell" : HASH_COMMENT_LANGS.has(language) ? "hash" : "c";
-const LANGUAGES_WITHOUT_COMMENT_GATE = new Set(["lua"]);
+  DIALECT_BY_LANGUAGE.get(language) ?? (HASH_COMMENT_LANGS.has(language) ? "hash" : "c");
+const LANGUAGES_WITH_COMMENT_GATE = new Set(["python", "shell"]);
 const END_DELIMITED_LANGS = new Set(["ruby", "elixir", "lua"]);
 
-function linesStartingInsideStrings(source: string, dialect: Dialect): Set<number> {
+function indentSpansOf(source: string, dialect: Dialect): FunctionSpans {
   const lineStarts = lineStartsOf(source);
   const inside = new Set<number>();
+  const commentColumns = new Map<number, number>();
   stripCommentsAndStrings(source, dialect, "blank-strings", (from, to, kind) => {
-    if (kind === "comment") return;
-    for (let line = lineAt(lineStarts, from) + 1; line <= lineAt(lineStarts, to); line++) inside.add(line);
+    const first = lineAt(lineStarts, from);
+    if (kind === "comment") commentColumns.set(first, from - lineStarts[first - 1]);
+    else for (let line = first + 1; line <= lineAt(lineStarts, to); line++) inside.add(line);
   });
-  return inside;
+  return { kind: "indent", lines_inside_strings: inside, comment_columns: commentColumns };
 }
 
+let lastIndentSpans: { source: string; dialect: Dialect; spans: FunctionSpans } | null = null;
+
 function spansOf(language: string, source: string): FunctionSpans {
-  if (INDENT_LANGS.has(language)) {
-    return { kind: "indent", lines_inside_strings: linesStartingInsideStrings(source, dialectOf(language)) };
+  if (!INDENT_LANGS.has(language)) return END_DELIMITED_LANGS.has(language) ? INDENT_SPANS : BRACE_SPANS;
+  const dialect = dialectOf(language);
+  if (lastIndentSpans?.source !== source || lastIndentSpans.dialect !== dialect) {
+    lastIndentSpans = { source, dialect, spans: indentSpansOf(source, dialect) };
   }
-  return END_DELIMITED_LANGS.has(language) ? INDENT_SPANS : BRACE_SPANS;
+  return lastIndentSpans.spans;
 }
 // Union of branch keywords; `and`/`or` only matter where they're operators —
 // elsewhere they can't appear as bare words outside stripped strings/comments.
@@ -140,7 +147,7 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     stateSpace: () => [],
 
     commentFacts(source) {
-      return LANGUAGES_WITHOUT_COMMENT_GATE.has(language) ? NO_COMMENTS : commentFactsOf(source, dialectOf(language));
+      return LANGUAGES_WITH_COMMENT_GATE.has(language) ? commentFactsOf(source, dialectOf(language)) : NO_COMMENTS;
     },
 
     testCoverage(_source, from, fileSet) {

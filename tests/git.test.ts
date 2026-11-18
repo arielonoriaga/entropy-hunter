@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  changedLinesSince, changedSince, churn, churnLog, currentCommit, GitError, isGitRepo, parseZeroContextDiff, parseZeroContextPatch,
+  batchesByBytes, changedLinesSince, changedSince, churn, churnLog, currentCommit, GitError, isGitRepo, parseZeroContextDiff, parseZeroContextPatch,
   readFilesAt, resolveBase,
   sinceToDate, startOfUtcDay, summarizeChurn,
 } from "../src/git";
@@ -36,7 +36,8 @@ beforeAll(() => {
   sh(["commit", "-qm", "second"]);
 });
 
-afterAll(() => rmSync(repo, { recursive: true, force: true }));
+const cleanupAfter: string[] = [];
+afterAll(() => [repo, ...cleanupAfter].forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 describe("git churn", () => {
   test("counts commits, additions and deletions per file", () => {
@@ -275,5 +276,59 @@ describe("changed lines of many files", () => {
     expect(linesOf(lines.get("new.ts"))).toEqual({ added: [3], removedAfter: [] });
     expect(lines.get("fresh.ts")).toEqual({ kind: "new-file" });
     rmSync(r.path, { recursive: true, force: true });
+  });
+
+  const committed = (files: Record<string, string>) => {
+    const r = tempRepo("entropy-lines-");
+    cleanupAfter.push(r.path);
+    for (const [path, content] of Object.entries(files)) r.write(path, content);
+    return { r, base: r.commit("base") };
+  };
+
+  test("user diff-prefix config cannot hide changed lines", () => {
+    const { r, base } = committed({ "a.ts": "one\ntwo\nthree\n" });
+    for (const [key, value] of [["diff.noprefix", "true"], ["diff.mnemonicPrefix", "true"], ["diff.srcPrefix", "x/"], ["diff.dstPrefix", "y/"]]) {
+      r.git("config", key, value);
+    }
+    r.write("a.ts", "one\nTWO\nthree\n");
+    const { changed } = changedSince(r.path, base);
+    expect(linesOf(changedLinesSince(r.path, base, changed).get("a.ts"))).toEqual({ added: [2], removedAfter: [] });
+  });
+
+  test("a binary diff attribute cannot hide changed lines", () => {
+    const { r, base } = committed({ ".gitattributes": "*.ts -diff\n", "a.ts": "one\ntwo\nthree\n" });
+    r.write("a.ts", "one\nTWO\nthree\n");
+    expect(linesOf(changedLinesSince(r.path, base, [{ path: "a.ts", base_path: "a.ts" }]).get("a.ts"))).toEqual({ added: [2], removedAfter: [] });
+  });
+
+  test("a changed file the diff does not account for counts as wholly touched", () => {
+    const { r, base } = committed({ "a.ts": "one\n" });
+    expect(changedLinesSince(r.path, base, [{ path: "a.ts", base_path: "a.ts" }]).get("a.ts")).toEqual({ kind: "new-file" });
+  });
+
+  test("sections without an after side: binary is unknown, mode-only and pure renames are unchanged", () => {
+    const diff = [
+      "diff --git a/bin.ts b/bin.ts", "index 1..2 100644", "Binary files a/bin.ts and b/bin.ts differ",
+      "diff --git a/mode.ts b/mode.ts", "old mode 100644", "new mode 100755",
+      "diff --git a/old.ts b/new.ts", "similarity index 100%", "rename from old.ts", "rename to new.ts",
+      'diff --git "a/sp ace.ts" "b/sp ace.ts"', "old mode 100644", "new mode 100755",
+    ].join("\n");
+    const byPath = parseZeroContextDiff(diff);
+    expect([...byPath.keys()].sort()).toEqual(["mode.ts", "new.ts", "sp ace.ts"]);
+    expect(linesOf(byPath.get("new.ts"))).toEqual({ added: [], removedAfter: [] });
+  });
+
+  test("thousands of long paths are diffed in batches, not one oversized argument list", () => {
+    const { r, base } = committed({ "a.ts": "one\n" });
+    const dir = "d".repeat(200);
+    const files = Array.from({ length: 12_000 }, (_, i) => ({ path: `${dir}/file-${i}.ts`, base_path: `${dir}/file-${i}.ts` }));
+    expect(changedLinesSince(r.path, base, files).size).toBe(12_000);
+  });
+
+  test("batches stay under the byte budget and keep every file", () => {
+    const files = Array.from({ length: 10 }, (_, i) => ({ path: `f${i}.ts`, base_path: `f${i}.ts` }));
+    const batches = batchesByBytes(files, 20);
+    expect(batches.flat()).toEqual(files);
+    expect(batches.every((batch) => batch.length === 2)).toBe(true);
   });
 });

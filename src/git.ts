@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type StdioOptions } from "node:child_process";
 import { basename } from "node:path";
 
 export interface FileChurn {
@@ -19,13 +19,14 @@ const MAX_GIT_LOG_BYTES = 256 * 1024 * 1024;
 const MS_PER_DAY = 86_400_000;
 const MS_PER_SECOND = 1000;
 
-function git(repo: string, args: string[]): string {
+const STDERR_KEPT_FOR_THE_ERROR_NOT_THE_TERMINAL: StdioOptions = ["ignore", "pipe", "pipe"];
+
+function git(repo: string, args: string[], timeoutMs?: number): string {
   return execFileSync("git", ["-C", repo, ...args], {
     encoding: "utf8",
     maxBuffer: MAX_GIT_LOG_BYTES,
-    // Capture stderr: a failed probe ("not a git repository") is an expected
-    // answer, not something to print; real failures still carry it in the error.
-    stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
+    stdio: STDERR_KEPT_FOR_THE_ERROR_NOT_THE_TERMINAL,
   });
 }
 
@@ -393,14 +394,57 @@ function unquotePatchPath(raw: string): string {
 const AFTER_SIDE_HEADER = "+++ ";
 const AFTER_SIDE_PREFIX = "b/";
 
+const SECTION_HEADER = "diff --git ";
+const CONTENT_UNCHANGED_TARGETS = ["rename to ", "copy to "];
+const BEFORE_SIDE_PREFIX = "a/";
+
+function samePathOfHeader(header: string): string | null {
+  const paths = header.slice(SECTION_HEADER.length);
+  const half = (paths.length - 1) / 2;
+  if (!Number.isInteger(half) || paths[half] !== " ") return null;
+  const before = unquotePatchPath(paths.slice(0, half));
+  const after = unquotePatchPath(paths.slice(half + 1));
+  const path = before.slice(BEFORE_SIDE_PREFIX.length);
+  return before.startsWith(BEFORE_SIDE_PREFIX) && after === AFTER_SIDE_PREFIX + path ? path : null;
+}
+
+type SectionBody = { kind: "no-hunks-yet"; unchangedTarget: string | null } | { kind: "hunks" } | { kind: "binary" };
+
+interface Section {
+  header: string;
+  body: SectionBody;
+}
+
+const BINARY_NOTICE = "Binary files ";
+
+function noteContentUnchanged(section: Section | null, byPath: Map<string, LineChanges>): void {
+  if (section?.body.kind !== "no-hunks-yet") return;
+  const path = section.body.unchangedTarget ?? samePathOfHeader(section.header);
+  if (path !== null) byPath.set(path, { kind: "diff", added: new Set(), removedAfter: new Set() });
+}
+
+function unchangedTargetOf(line: string): string | null {
+  const prefix = CONTENT_UNCHANGED_TARGETS.find((p) => line.startsWith(p));
+  return prefix ? unquotePatchPath(line.slice(prefix.length)) : null;
+}
+
 export function parseZeroContextDiff(diff: string): Map<string, LineChanges> {
   const byPath = new Map<string, LineChanges>();
   const lines = diff.split("\n");
   let reading: HunkReading | null = null;
+  let section: Section | null = null;
   for (let at = 0; at < lines.length; ) {
     const line = lines[at++];
-    if (line.startsWith("diff --git ")) reading = null;
-    else if (line.startsWith(AFTER_SIDE_HEADER)) {
+    if (line.startsWith(SECTION_HEADER)) {
+      noteContentUnchanged(section, byPath);
+      section = { header: line, body: { kind: "no-hunks-yet", unchangedTarget: null } };
+      reading = null;
+    } else if (section?.body.kind === "no-hunks-yet" && line.startsWith(BINARY_NOTICE)) {
+      section.body = { kind: "binary" };
+    } else if (section?.body.kind === "no-hunks-yet" && unchangedTargetOf(line) !== null) {
+      section.body = { kind: "no-hunks-yet", unchangedTarget: unchangedTargetOf(line) };
+    } else if (line.startsWith(AFTER_SIDE_HEADER)) {
+      if (section) section.body = { kind: "hunks" };
       const path = unquotePatchPath(line.slice(AFTER_SIDE_HEADER.length));
       reading = path.startsWith(AFTER_SIDE_PREFIX) ? { added: new Set(), removedAfter: new Set() } : null;
       if (reading) byPath.set(path.slice(AFTER_SIDE_PREFIX.length), { kind: "diff", ...reading });
@@ -409,23 +453,50 @@ export function parseZeroContextDiff(diff: string): Map<string, LineChanges> {
       if (hunk) at = readHunk(lines, at, hunk, reading!);
     }
   }
+  noteContentUnchanged(section, byPath);
   return byPath;
 }
 
-const UNCHANGED: LineChanges = { kind: "diff", added: new Set(), removedAfter: new Set() };
+const EVERY_LINE_TOUCHED: LineChanges = { kind: "new-file" };
+const PATHSPEC_BATCH_BYTES = 64 * 1024;
+const LINE_DIFF_TIMEOUT_MS = 120_000;
+const PINNED_DIFF_CONFIG = [
+  "-c", "core.quotePath=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+];
+const PINNED_DIFF_FLAGS = [
+  "-U0", "--text", "--inter-hunk-context=0", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--relative",
+  `--src-prefix=${BEFORE_SIDE_PREFIX}`, `--dst-prefix=${AFTER_SIDE_PREFIX}`,
+];
+
+export function batchesByBytes(files: ChangedFile[], maxBytes: number): ChangedFile[][] {
+  const batches: ChangedFile[][] = [];
+  let bytes = maxBytes;
+  for (const f of files) {
+    const size = f.path.length + (f.base_path ?? "").length;
+    if (bytes + size > maxBytes) {
+      batches.push([]);
+      bytes = 0;
+    }
+    batches[batches.length - 1].push(f);
+    bytes += size;
+  }
+  return batches;
+}
+
+function diffLinesOf(repo: string, base: string, files: ChangedFile[]): Map<string, LineChanges> {
+  const pathspecs = [...new Set(files.flatMap((f) => [f.base_path!, f.path]))].map((p) => `:(literal)${p}`);
+  const diff = git(repo, [...PINNED_DIFF_CONFIG, "diff", ...PINNED_DIFF_FLAGS, base, "--", ...pathspecs], LINE_DIFF_TIMEOUT_MS);
+  return parseZeroContextDiff(diff);
+}
 
 export function changedLinesSince(repo: string, base: string, files: ChangedFile[]): Map<string, LineChanges> {
   const result = new Map<string, LineChanges>();
+  for (const f of files) if (f.base_path === null) result.set(f.path, EVERY_LINE_TOUCHED);
   const diffed = files.filter((f) => f.base_path !== null);
-  for (const f of files) if (f.base_path === null) result.set(f.path, { kind: "new-file" });
-  if (!diffed.length) return result;
-  const pathspecs = [...new Set(diffed.flatMap((f) => [f.base_path!, f.path]))].map((p) => `:(literal)${p}`);
-  const diff = git(repo, [
-    "-c", "core.quotePath=false", "diff", "-U0", "--inter-hunk-context=0", "-M", "--no-color", "--no-ext-diff",
-    "--no-textconv", "--relative", base, "--", ...pathspecs,
-  ]);
-  const byPath = parseZeroContextDiff(diff);
-  for (const f of diffed) result.set(f.path, byPath.get(f.path) ?? UNCHANGED);
+  for (const batch of batchesByBytes(diffed, PATHSPEC_BATCH_BYTES)) {
+    const byPath = diffLinesOf(repo, base, batch);
+    for (const f of batch) result.set(f.path, byPath.get(f.path) ?? EVERY_LINE_TOUCHED);
+  }
   return result;
 }
 

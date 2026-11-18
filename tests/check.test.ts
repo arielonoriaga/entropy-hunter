@@ -299,6 +299,38 @@ describe("entropy check: comments across languages", () => {
     ]);
   });
 
+  test("user diff config that renames the patch prefixes cannot turn the rule off", () => {
+    const source = "export function f(): number {\n  // old note about f\n  return 1;\n}\n";
+    repo.write("src/pre.ts", source);
+    repo.commit("pre");
+    repo.git("config", "diff.noprefix", "true");
+    repo.git("config", "diff.mnemonicPrefix", "true");
+    repo.write("src/pre.ts", source.replace("return 1;", "return 2;"));
+    expect(commentsOf(check(), "src/pre.ts")[0]).toContain("`f` (line 1) still carries 1 comment (line 2)");
+  });
+
+  test.each([
+    [
+      "a comment above a multi-line decorator stays with the method under it",
+      "src/deco.ts",
+      "export class S {\n  // retries because upstream drops the first call\n  @Retry({\n    times: 3,\n  })\n  run(): number {\n    return 1;\n  }\n}\n",
+      ["return 1;", "return 2;"],
+      "`run` (line 6) still carries 1 comment (line 2)",
+    ],
+    [
+      "a function with braces in its type parameters is still a function",
+      "src/gen.ts",
+      "export function f<T extends { id: number }>(xs: T[]): number {\n  // keep the first id\n  return xs[0].id;\n}\n",
+      ["xs[0]", "xs[1]"],
+      "`f` (line 1) still carries 1 comment (line 2)",
+    ],
+  ])("%s", (_what, path, source, [from, to], expected) => {
+    repo.write(path, source);
+    repo.commit(path);
+    repo.write(path, source.replace(from, to));
+    expect(commentsOf(check(), path)[0]).toContain(expected);
+  });
+
   test("a statement replaced by a blank line touches its function", () => {
     repo.write("src/two.ts", TWO_FUNCTIONS);
     repo.commit("two");

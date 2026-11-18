@@ -66,6 +66,14 @@ describe("stripCommentsAndStrings", () => {
     expect(performance.now() - started).toBeLessThan(2000);
   });
 
+  test("shell shifts and heredocs are scanned in linear time", () => {
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => "x=DOLLAR(( a<<b" + i + " ))\ncat <<E" + i + "\n").join("").replaceAll("DOLLAR", "$");
+    const started = performance.now();
+    const out = strip(lines(16_000), "shell");
+    expect(out.length).toBe(lines(16_000).length);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test("the listener hears every comment and literal region with its kind", () => {
     const heard: [string, RegionKind][] = [];
     const source = "a = 'x' // c\nb = /re/;";

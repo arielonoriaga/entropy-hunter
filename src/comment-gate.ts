@@ -54,7 +54,11 @@ export function commentFindings(functions: FunctionComplexity[], comments: Comme
   const loose: number[] = [];
   for (const line of comments.lines) {
     const owner = ownerOf(line);
-    if (owner && touched.has(owner)) carried.set(owner, [...(carried.get(owner) ?? []), line]);
+    if (owner && touched.has(owner)) {
+      const lines = carried.get(owner);
+      if (lines) lines.push(line);
+      else carried.set(owner, [line]);
+    }
     else if (!owner && (changes.kind === "new-file" || changes.added.has(line))) loose.push(line);
   }
   const inFunctions = [...carried].map(

@@ -16,17 +16,18 @@ const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"
 // Function headers: declarations, assigned arrows/functions, class methods.
 // Heuristic — inline anonymous callbacks are attributed to their enclosing
 // named function rather than counted separately.
+const TYPE_PARAMETERS = String.raw`(?:<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>\s*)?`;
 const FN_HEADER = new RegExp(
   [
-    /\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/.source,
+    /\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*TYPE_PARAMETERS\(/.source,
     // The RHS may be wrapped in a single hook/HOC call — `createMemo(() => {`,
     // `useMemo(() => {`, `on(dep, () => {`, `createMemo<T>(() => {` — so a
     // sibling memo/effect gets its own header instead of donating its decision
     // points to whatever real function preceded it (see the "wrapped in a
     // single hook call" / "generic type arguments" regressions).
     /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:[A-Za-z_$][\w$]*(?:<[^>]*>)?\(\s*)?(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)/.source,
-    /^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|get\s+|set\s+|override\s+)*(?!(?:if|for|while|switch|catch|return|else|do|try|function|new|typeof|await|yield)\b)([A-Za-z_$][\w$]*)\s*\([^;=]*\)\s*(?::\s*[^{;=]+)?\{\s*$/.source,
-  ].join("|"),
+    /^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|get\s+|set\s+|override\s+)*(?!(?:if|for|while|switch|catch|return|else|do|try|function|new|typeof|await|yield)\b)([A-Za-z_$][\w$]*)\s*TYPE_PARAMETERS\([^;=]*\)\s*(?::\s*[^{;=]+)?\{\s*$/.source,
+  ].join("|").replaceAll("TYPE_PARAMETERS", TYPE_PARAMETERS),
   "gm",
 );
 const DECISION = /\b(?:if|for|while|case|catch)\b|&&|\|\||\?\?/g;
@@ -44,6 +45,7 @@ const stripped = memoizedStrip("javascript");
 const CONST_DECLARATION = /^\s*(?:export\s+)?const\b/;
 const IF_HEADER = /^(\s*)if\s*\((.+)\)\s*\{?\s*$/;
 const JSX_EXTENSIONS = [".tsx", ".jsx"];
+const PLAIN_JS_EXTENSIONS = [".js", ".mjs", ".cjs"];
 
 const jsxStripped = memoizedStrip("jsx");
 
@@ -196,4 +198,9 @@ export const jsxAnalyzer: LanguageAnalyzer = {
   sharedConditions: (source) => findSharedConditionGroups(jsxStripped(source), IF_HEADER),
   nesting: (source) => braceNesting(jsxStripped(source)),
   commentFacts: (source) => commentFactsOf(source, "jsx"),
+};
+
+export const javascriptAnalyzer: LanguageAnalyzer = {
+  ...jsxAnalyzer,
+  detect: (path) => PLAIN_JS_EXTENSIONS.some((extension) => path.endsWith(extension)),
 };

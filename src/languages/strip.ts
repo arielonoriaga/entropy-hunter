@@ -62,8 +62,9 @@ const openerTable = (codes: number[]) => {
   for (const code of codes) table[code] = 1;
   return table;
 };
-const REGION_OPENERS = [SLASH, HASH, LOWER_R, DOUBLE, SINGLE, BACKTICK];
+const REGION_OPENERS = [SLASH, HASH, DOUBLE, SINGLE, BACKTICK];
 const OPENS_REGION = openerTable(REGION_OPENERS);
+const OPENS_REGION_OR_RAW_STRING = openerTable([...REGION_OPENERS, LOWER_R]);
 const OPENS_REGION_OR_JSX = openerTable([...REGION_OPENERS, LESS, GREATER, OPEN_BRACE, CLOSE_BRACE]);
 const OPENS_REGION_OR_HEREDOC = openerTable([...REGION_OPENERS, LESS, NEWLINE]);
 
@@ -75,20 +76,35 @@ const lineEnd = (src: string, from: number) => {
 export type RegionKind = "comment" | "string" | "opaque";
 export type RegionListener = (from: number, to: number, kind: RegionKind) => void;
 
-export type Dialect = "c" | "json" | "javascript" | "jsx" | "rust" | "hash" | "shell";
+export type Dialect = "c" | "json" | "javascript" | "jsx" | "rust" | "hash" | "python" | "shell";
 export type StringView = "blank-strings" | "keep-strings";
 
 const dialects = (...names: Dialect[]) => new Set<Dialect>(names);
-const SINGLE_QUOTE_STRINGS = dialects("c", "javascript", "jsx", "hash", "shell");
+const SINGLE_QUOTE_STRINGS = dialects("c", "javascript", "jsx", "hash", "python", "shell");
 const SLASH_COMMENTS = dialects("c", "json", "javascript", "jsx", "rust");
-const HASH_COMMENTS = dialects("hash", "shell");
+const HASH_COMMENTS = dialects("hash", "python", "shell");
 const REGEX_LITERALS = dialects("javascript", "jsx");
+const CHAR_LITERALS = dialects("rust");
+const TRIPLE_QUOTED_STRINGS = dialects("python");
+
+interface HeredocTerminators {
+  exact: Map<string, number[]>;
+  tabIndented: Map<string, number[]>;
+}
+
+interface ShellScan {
+  bodyFrom: number;
+  bodyTo: number;
+  terminators: HeredocTerminators | null;
+  lineStart: number;
+  arithmeticScannedTo: number;
+  arithmeticDepth: number;
+}
 
 interface Scan {
   dialect: Dialect;
   jsxContexts: number[] | null;
-  heredocBodyFrom: number;
-  heredocBodyTo: number;
+  shell: ShellScan;
   from: number;
   to: number;
   resume: number;
@@ -137,33 +153,73 @@ function stringEnd(src: string, open: number, quote: number): number {
   return j;
 }
 
-const HEREDOC_OPEN = /<<(-?)[ \t]*(["']?)([A-Za-z_]\w*)\2/y;
+const HEREDOC_OPEN = /<<(-?)[ \t]*\\?(["']?)([A-Za-z_]\w*)\2/y;
+const TERMINATOR_LINE = /^(\t*)([A-Za-z_]\w*)\r?$/gm;
 
-function heredocTerminatorLineStart(src: string, at: number): number {
+function indexTerminators(src: string): HeredocTerminators {
+  const index: HeredocTerminators = { exact: new Map(), tabIndented: new Map() };
+  const note = (map: Map<string, number[]>, word: string, at: number) => {
+    const starts = map.get(word);
+    if (starts) starts.push(at);
+    else map.set(word, [at]);
+  };
+  for (const m of src.matchAll(TERMINATOR_LINE)) {
+    if (!m[1]) note(index.exact, m[2], m.index);
+    note(index.tabIndented, m[2], m.index);
+  }
+  return index;
+}
+
+function firstAfter(starts: number[] | undefined, from: number): number {
+  if (!starts) return -1;
+  let low = 0;
+  let high = starts.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (starts[mid] < from) low = mid + 1;
+    else high = mid;
+  }
+  return low < starts.length ? starts[low] : -1;
+}
+
+const OPEN_PAREN = 40, CLOSE_PAREN = 41;
+
+function insideArithmetic(src: string, at: number, scan: Scan): boolean {
+  if (scan.shell.arithmeticScannedTo < scan.shell.lineStart) {
+    scan.shell.arithmeticScannedTo = scan.shell.lineStart;
+    scan.shell.arithmeticDepth = 0;
+  }
+  for (let k = scan.shell.arithmeticScannedTo; k < at; k++) {
+    const c = src.charCodeAt(k);
+    const doubled = (c === OPEN_PAREN || c === CLOSE_PAREN) && src.charCodeAt(k + 1) === c;
+    if (!doubled) continue;
+    scan.shell.arithmeticDepth = Math.max(0, scan.shell.arithmeticDepth + (c === OPEN_PAREN ? 1 : -1));
+    k++;
+  }
+  scan.shell.arithmeticScannedTo = Math.max(scan.shell.arithmeticScannedTo, at);
+  return scan.shell.arithmeticDepth > 0;
+}
+
+function heredocTerminatorLineStart(src: string, at: number, scan: Scan): number {
   if (src.charCodeAt(at - 1) === LESS) return -1;
   HEREDOC_OPEN.lastIndex = at;
   const m = HEREDOC_OPEN.exec(src);
-  if (!m) return -1;
-  const leadingTabsAllowed = m[1] === "-";
-  for (let lineStart = lineEnd(src, at) + 1; lineStart < src.length; ) {
-    const end = lineEnd(src, lineStart);
-    let line = src.slice(lineStart, end).replace(/\r$/, "");
-    if (leadingTabsAllowed) line = line.replace(/^\t+/, "");
-    if (line === m[3]) return lineStart;
-    lineStart = end + 1;
-  }
-  return -1;
+  if (!m || insideArithmetic(src, at, scan)) return -1;
+  scan.shell.terminators ??= indexTerminators(src);
+  const terminators = m[1] === "-" ? scan.shell.terminators.tabIndented : scan.shell.terminators.exact;
+  return firstAfter(terminators.get(m[3]), lineEnd(src, at) + 1);
 }
 
 function scanHeredoc(src: string, i: number, c: number, scan: Scan): void {
   if (c === NEWLINE) {
-    if (i + 1 === scan.heredocBodyFrom) region(scan, scan.heredocBodyFrom, scan.heredocBodyTo, scan.heredocBodyTo, "opaque");
+    scan.shell.lineStart = i + 1;
+    if (i + 1 === scan.shell.bodyFrom) region(scan, scan.shell.bodyFrom, scan.shell.bodyTo, scan.shell.bodyTo, "opaque");
     return;
   }
-  const terminator = heredocTerminatorLineStart(src, i);
+  const terminator = heredocTerminatorLineStart(src, i, scan);
   if (terminator === -1) return;
-  scan.heredocBodyFrom = lineEnd(src, i) + 1;
-  scan.heredocBodyTo = terminator;
+  scan.shell.bodyFrom = lineEnd(src, i) + 1;
+  scan.shell.bodyTo = terminator;
 }
 
 const JSX_TAG = 1, JSX_CLOSING_TAG = 2, JSX_CHILDREN = 3, JSX_EXPRESSION = 4;
@@ -229,6 +285,41 @@ function jsxStep(src: string, i: number, c: number, contexts: number[]): number 
   return jsxCodeStep(src, i, c, contexts);
 }
 
+const RUST_CHAR = /'(?:[^'\\\n\r]|[\uD800-\uDBFF][\uDC00-\uDFFF]|\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|[^\n]))'/y;
+
+function rustCharEnd(src: string, i: number): number {
+  RUST_CHAR.lastIndex = i;
+  return RUST_CHAR.test(src) ? RUST_CHAR.lastIndex : -1;
+}
+
+const TRIPLE_QUOTE_LENGTH = 3;
+const opensTripleQuote = (src: string, at: number, quote: number) =>
+  src.charCodeAt(at) === quote && src.charCodeAt(at + 1) === quote && src.charCodeAt(at + 2) === quote;
+
+function tripleQuotedEnd(src: string, from: number, quote: number): number {
+  for (let j = from; j < src.length; j++) {
+    if (src.charCodeAt(j) === BACKSLASH) j++;
+    else if (opensTripleQuote(src, j, quote)) return j;
+  }
+  return src.length;
+}
+
+function scanQuoted(src: string, i: number, c: number, scan: Scan): void {
+  if (CHAR_LITERALS.has(scan.dialect) && c === SINGLE) {
+    const end = rustCharEnd(src, i);
+    if (end !== -1) region(scan, i + 1, end - 1, end, "string");
+    return;
+  }
+  if (c === SINGLE && !SINGLE_QUOTE_STRINGS.has(scan.dialect)) return;
+  if (TRIPLE_QUOTED_STRINGS.has(scan.dialect) && c !== BACKTICK && opensTripleQuote(src, i, c)) {
+    const bodyFrom = i + TRIPLE_QUOTE_LENGTH;
+    const close = tripleQuotedEnd(src, bodyFrom, c);
+    return region(scan, bodyFrom, close, Math.min(close + TRIPLE_QUOTE_LENGTH, src.length), "string");
+  }
+  const close = stringEnd(src, i, c);
+  region(scan, i + 1, close, Math.min(close + 1, src.length), "string");
+}
+
 function scanLiteral(src: string, i: number, c: number, scan: Scan): void {
   if (c === LOWER_R) {
     const end = rustRawStringEnd(src, i);
@@ -240,9 +331,7 @@ function scanLiteral(src: string, i: number, c: number, scan: Scan): void {
     if (close !== -1) region(scan, i + 1, close, close + 1, "opaque");
     return;
   }
-  if (c === HASH || (c === SINGLE && !SINGLE_QUOTE_STRINGS.has(scan.dialect))) return;
-  const close = stringEnd(src, i, c);
-  region(scan, i + 1, close, Math.min(close + 1, src.length), "string");
+  if (c !== HASH) scanQuoted(src, i, c, scan);
 }
 
 function scanRegionAt(src: string, i: number, c: number, scan: Scan): void {
@@ -257,6 +346,10 @@ function scanRegionAt(src: string, i: number, c: number, scan: Scan): void {
   scanLiteral(src, i, c, scan);
 }
 
+const OPENERS_BY_DIALECT = new Map<Dialect, Uint8Array>([
+  ["jsx", OPENS_REGION_OR_JSX], ["shell", OPENS_REGION_OR_HEREDOC], ["rust", OPENS_REGION_OR_RAW_STRING],
+]);
+
 export function stripCommentsAndStrings(
   src: string,
   dialect: Dialect = "c",
@@ -265,10 +358,11 @@ export function stripCommentsAndStrings(
 ): string {
   const jsxContexts: number[] | null = dialect === "jsx" ? [] : null;
   const scan: Scan = {
-    dialect, jsxContexts, heredocBodyFrom: -1, heredocBodyTo: -1, from: 0, to: 0, resume: 0, kind: "comment",
+    dialect, jsxContexts, from: 0, to: 0, resume: 0, kind: "comment",
+    shell: { bodyFrom: -1, bodyTo: -1, terminators: null, lineStart: 0, arithmeticScannedTo: 0, arithmeticDepth: 0 },
   };
   const keepStrings = view === "keep-strings";
-  const opensRegion = jsxContexts ? OPENS_REGION_OR_JSX : dialect === "shell" ? OPENS_REGION_OR_HEREDOC : OPENS_REGION;
+  const opensRegion = OPENERS_BY_DIALECT.get(dialect) ?? OPENS_REGION;
   const n = src.length;
   const out: string[] = [];
   let copiedUpTo = 0;

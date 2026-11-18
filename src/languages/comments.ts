@@ -13,21 +13,36 @@ interface Region {
 }
 
 const LEADING_COMMENT_MARKER = /^\s*(?:\/\/[/!]?|\/\*+!?|\*+(?!\/)|#+!?)?\s*/;
-const PRAGMA_WORDS = [
-  "eslint-disable(?:-next-line|-line)?", "eslint-enable",
-  "tslint:(?:disable|enable)(?:-next-line|-line)?", "oxlint-(?:disable|enable)(?:-next-line|-line)?",
-  "@ts-(?:ignore|expect-error|nocheck|check)", "prettier-ignore", "biome-ignore",
-  "NOLINT(?:NEXTLINE|BEGIN|END)?", "noqa", "type:\\s*ignore", "(?:istanbul|c8|v8) ignore",
-  "pylint:\\s*disable", "rubocop:(?:disable|enable)", "rustfmt::skip", "@vite-ignore",
+const LINT_RULE = String.raw`[@\w][\w@/.-]*`;
+const LINT_RULES = String.raw`(?:\s+${LINT_RULE}(?:\s*,\s*${LINT_RULE})*)?`;
+const LINT_DIRECTIVE = "(?:disable(?:-next-line|-line)?|enable)";
+const WEBPACK_HINT = String.raw`webpack(?:ChunkName|Prefetch|Preload|Mode|Ignore|Exports|Include|Exclude|FetchPriority)\s*:\s*(?:"[^"]*"|'[^']*'|true|false|-?\d+)`;
+const PRAGMA_GRAMMARS = [
+  "eslint-" + LINT_DIRECTIVE + LINT_RULES,
+  "oxlint-" + LINT_DIRECTIVE + LINT_RULES,
+  "tslint:(?:disable|enable)(?:-next-line|-line)?(?::[\\w-]+(?:\\s+[\\w-]+)*)?",
+  "@ts-(?:ignore|expect-error|nocheck|check)",
+  "prettier-ignore",
+  "biome-ignore(?:-all|-start|-end)?(?:\\s+[\\w/-]+:?)?",
+  "NOLINT(?:NEXTLINE|BEGIN|END)?(?:\\([\\w.,*-]+\\))?",
+  "(?:noqa|NOQA)(?::\\s*[A-Z]+\\d+(?:\\s*,\\s*[A-Z]+\\d+)*)?",
+  "type:\\s*ignore(?:\\[[\\w-]+(?:\\s*,\\s*[\\w-]+)*\\])?",
+  "istanbul\\s+ignore\\s+(?:next|if|else|file)",
+  "(?:c8|v8)\\s+ignore\\s+(?:next(?:\\s+\\d+)?|start|stop|file)",
+  "pylint:\\s*(?:(?:disable|enable|disable-next)=[\\w-]+(?:\\s*,\\s*[\\w-]+)*|skip-file)",
+  "shellcheck(?:\\s+(?:disable|enable|source|source-path|shell|external-sources)=\\S+)+",
+  "rustfmt::skip",
+  "<reference\\s+(?:path|types|lib)=\"[^\"]*\"\\s*\\/>",
+  WEBPACK_HINT + "(?:\\s*,\\s*" + WEBPACK_HINT + ")*",
+  "@vite-ignore",
 ];
-const PRAGMA_PREFIXES = [
-  "shellcheck\\s+(?:disable|source|shell)=", "clippy::", "<reference\\s",
-  "webpack(?:ChunkName|Prefetch|Preload|Mode|Ignore|Exports|Include|Exclude|FetchPriority)\\s*:",
-];
-const TOOL_PRAGMA = new RegExp(`^(?:(?:${PRAGMA_WORDS.join("|")})(?=$|[\\s:=,(\\[])|${PRAGMA_PREFIXES.join("|")})`);
+const TOOL_PRAGMA = new RegExp(`^(?:${PRAGMA_GRAMMARS.join("|")})$`);
 const STAR = 42;
-const LICENSE = /^(?:SPDX-License-Identifier:|@license\b|Copyright\s+(?:\(c\)\s*|©\s*)?\d{4})/i;
-const DECORATOR_LINE = /^\s*(?:@[A-Za-z_$][\w$.]*(?:\(.*\))?|#!?\[.*\])\s*$/;
+const LICENSE_LINE =
+  /^(?:SPDX-License-Identifier:\s*[\w.+-]+(?:\s+(?:AND|OR|WITH)\s+[\w.+-]+)*|@license(?:\s+[\w.+-]+)?|Copyright\s+(?:\(c\)\s*|©\s*)?\d{4}\b.*)$/i;
+const DECORATOR = /^\s*(?:@[A-Za-z_$][\w$.]*(?:\(.*\))?|#!?\[.*\])\s*$/;
+const DECORATOR_START = /^\s*(?:@[A-Za-z_$]|#!?\[)/;
+const MAX_DECORATOR_LINES = 64;
 
 interface Source {
   text: string;
@@ -72,23 +87,38 @@ function firstCodeLine(source: Source): number {
 function leadingLicenseLines(source: Source, regions: Region[]): Set<number> {
   const beforeCode = firstCodeLine(source);
   const licensed = new Set<number>();
-  let run: number[] = [];
-  let runIsLicense = false;
-  const closeRun = () => {
-    if (runIsLicense) run.forEach((line) => licensed.add(line));
-    run = [];
-    runIsLicense = false;
-  };
   for (const region of regions) {
     for (const line of linesOf(source, region)) {
-      if (line >= beforeCode) break;
-      if (run.length && line > run[run.length - 1] + 1) closeRun();
-      if (run[run.length - 1] !== line) run.push(line);
-      runIsLicense ||= LICENSE.test(bodyOnLine(source, region, line));
+      if (line >= beforeCode) return licensed;
+      if (LICENSE_LINE.test(bodyOnLine(source, region, line))) licensed.add(line);
     }
   }
-  closeRun();
   return licensed;
+}
+
+const BRACKET_DEPTH_CHANGE = new Map([["(", 1], ["[", 1], ["{", 1], [")", -1], ["]", -1], ["}", -1]]);
+
+function bracketDelta(line: string): number {
+  let delta = 0;
+  for (const c of line) delta += BRACKET_DEPTH_CHANGE.get(c) ?? 0;
+  return delta;
+}
+
+function decoratorLines(strippedLines: string[]): number[] {
+  const found: number[] = [];
+  for (let first = 0; first < strippedLines.length; first++) {
+    if (!DECORATOR_START.test(strippedLines[first])) continue;
+    let last = first;
+    let depth = bracketDelta(strippedLines[first]);
+    while (depth > 0 && last + 1 < strippedLines.length && last - first < MAX_DECORATOR_LINES) {
+      depth += bracketDelta(strippedLines[++last]);
+    }
+    const joined = strippedLines.slice(first, last + 1).map((line) => line.trim()).join(" ");
+    if (!DECORATOR.test(joined)) continue;
+    for (let line = first; line <= last; line++) found.push(line + 1);
+    first = last;
+  }
+  return found;
 }
 
 function reportedLinesOf(source: Source, region: Region, licensed: Set<number>): number[] {
@@ -117,7 +147,7 @@ export function commentFactsOf(text: string, dialect: Dialect): CommentFacts {
     reportedLinesOf(source, region, licensed).forEach((line) => reported.add(line));
   }
   const commentOnly = [...covered].filter((line) => source.strippedLines[line - 1].trim() === "");
-  const decorators = source.strippedLines.flatMap((line, k) => (DECORATOR_LINE.test(line) ? [k + 1] : []));
+  const decorators = decoratorLines(source.strippedLines);
   const ascending = (a: number, b: number) => a - b;
   return {
     lines: [...reported].sort(ascending),

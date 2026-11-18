@@ -81,6 +81,7 @@ const CACHE_VERSION_CHANGES = {
   v15: "control-flow nesting depth",
   v16: "function end lines",
   v17: "brace-matched function spans; JSX-, heredoc- and hash-comment-aware stripping",
+  v18: "exact pragma and license grammars; Rust char, Python triple-quote and heredoc stripping; generic type parameters",
 } as const;
 const CACHE_VERSION = Object.keys(CACHE_VERSION_CHANGES).at(-1)!;
 

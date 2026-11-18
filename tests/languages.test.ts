@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { rustAnalyzer } from "../src/languages/rust";
-import { jsxAnalyzer, typescriptAnalyzer } from "../src/languages/typescript";
+import { javascriptAnalyzer, jsxAnalyzer, typescriptAnalyzer } from "../src/languages/typescript";
 import { analyzerFor } from "../src/languages";
 import {
   braceNesting, countChainedComparisons, dependenciesOf, indentNesting,
@@ -545,6 +545,16 @@ describe("function spans follow the code, not the indentation", () => {
     expect(spans(python.complexity('def f():\n    x = """\nhello\n"""\n    return x\n\nVALUE = 1\n'))).toEqual([["f", 1, 5]]);
   });
 
+  test("TypeScript: type parameters holding braces belong to the header, not the body", () => {
+    const source = "export function f<T extends { id: number }>(xs: T[]): number {\n  return xs[0].id;\n}\nconst z = 1;\n";
+    expect(spans(typescriptAnalyzer.complexity(source))).toEqual([["f", 1, 3]]);
+  });
+
+  test("Python: a comment closing the indented body belongs to the function", () => {
+    const python = genericAnalyzerFor("a.py")!;
+    expect(spans(python.complexity("def a():\n    x = 1\n    # trailing note about a\n\ndef b():\n    return 2\n# module note\n"))).toEqual([["a", 1, 3], ["b", 5, 6]]);
+  });
+
   test("Rust: a trait method without a body ends at its semicolon", () => {
     expect(spans(rustAnalyzer.complexity("trait Q {\n    fn g(&self);\n    fn h(&self) {\n        1\n    }\n}\n"))).toEqual([["g", 2, 2], ["h", 3, 5]]);
   });
@@ -565,7 +575,23 @@ describe("JSX files", () => {
 });
 
 describe("comment gate coverage by language", () => {
-  test("Lua is left out: its comments are not recognized", () => {
-    expect(genericAnalyzerFor("a.lua")!.commentFacts("-- why\nlocal x = 1 // 2\n")).toEqual({ lines: [], lead_in_lines: [] });
+  test.each(["a.lua", "a.go", "a.c", "a.cs", "a.java", "a.rb", "a.php", "a.kt", "a.swift", "a.ex", "a.gd"])(
+    "%s is outside the proven dialects: no comments are reported",
+    (path) => {
+      expect(genericAnalyzerFor(path)!.commentFacts("// why\n# why\n-- why\nx = 1\n")).toEqual({ lines: [], lead_in_lines: [] });
+    },
+  );
+
+  test.each(["a.py", "a.sh", "a.bash"])("%s reports its comments", (path) => {
+    expect(genericAnalyzerFor(path)!.commentFacts("# why\nx=1\n").lines).toEqual([1]);
+  });
+
+  test("plain .js, .mjs and .cjs are read in the JSX dialect", () => {
+    for (const path of ["a.js", "a.mjs", "a.cjs"]) expect(analyzerFor(path)).toBe(javascriptAnalyzer);
+    const apostrophe = "export function App() {\n  return <p>Don't</p>;\n}\nexport function g() {\n  // real\n  return 1;\n}\n";
+    const url = "export function K() {\n  return <p>Visit https://x.com, don't wait</p>;\n}\n";
+    expect(javascriptAnalyzer.commentFacts(apostrophe).lines).toEqual([5]);
+    expect(javascriptAnalyzer.commentFacts(url).lines).toEqual([]);
+    expect(javascriptAnalyzer.complexity(apostrophe).functions.map((f) => [f.name, f.line, f.end_line])).toEqual([["App", 1, 3], ["g", 4, 7]]);
   });
 });

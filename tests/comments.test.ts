@@ -16,7 +16,14 @@ const REPORTED: [string, string, CommentSyntax, number[]][] = [
   ["a copyright word mid-sentence is not a license header", "// see the Copyright section\nx;\n", "javascript", [1]],
   ["a copyright without a year is not a license header", "// we keep this because the\n// Copyright header must stay\nx;\n", "javascript", [1, 2]],
   ["a license header after the first line of code is just a comment", "x;\n// Copyright 2024 Someone\n", "javascript", [2]],
-  ["only the leading block holding the license is exempt", "// Copyright (c) 2024 Someone\n// Licensed MIT\n\n// why\nx;\n", "javascript", [4]],
+  ["only the license lines of the leading block are exempt", "// Copyright (c) 2024 Someone\n// Licensed MIT\n\n// why\nx;\n", "javascript", [2, 4]],
+  ["prose in a license block is reported with its delimiters", "/**\n * @license MIT\n * Some text\n */\nx;\n", "javascript", [1, 3, 4]],
+  ["prose after a copyright line is reported", "// Copyright 2024 Acme\n// This module doubles prices.\nx;\n", "javascript", [2]],
+  ["Rust char and byte literals holding quotes are not strings that hide comments", "fn f() {\n    let c = '\"'; // real\n    let d = '\\''; let e = b'\"';\n}\nfn g<'a>(x: &'a str) {} // also\n", "rust", [2, 5]],
+  ["a quoted-word heredoc with a backslash is text", "cat <<\\EOF\n# not a comment\nEOF\n# real\n", "shell", [4]],
+  ["a shift inside arithmetic is not a heredoc", "x=DOLLAR(( a<<b ))\n# real\nb\n", "shell", [2]],
+  ["a Python triple-quoted string is one string, whatever quotes it holds", 'def f():\n    """He said "hi\n# not a comment\n    """\n    return 1  # real\n', "python", [5]],
+  ["a Python single-quoted triple string hides hashes too", "s = '''it's\n# text\n'''\n# real\n", "python", [4]],
   ["a shell hash inside a parameter expansion is not a comment", "n=DOLLAR{#items[@]}\necho DOLLAR#\n# why\n", "shell", [3]],
   ["a shebang only counts on the first line", "echo 1\n#!/bin/sh\n", "shell", [2]],
   ["hash is plain text outside hash-comment languages", "int a = b # c;\n", "c", []],
@@ -31,6 +38,20 @@ const REPORTED: [string, string, CommentSyntax, number[]][] = [
   ["a generic arrow in a .tsx file is not a JSX element", "const f = <T,>(x: T) => x; // why\nconst g = <T>(x: T) => x;\n// also\n", "jsx", [1, 3]],
 ].map(([what, source, ...rest]) => [what, (source as string).replaceAll("DOLLAR", "$"), ...rest]) as [string, string, CommentSyntax, number[]][];
 
+const PROSE_AFTER_A_DIRECTIVE: [string, string, CommentSyntax][] = [
+  ["a reason after an eslint directive is prose", "// eslint-disable-next-line no-console -- we must log\nx;\n", "javascript"],
+  ["eslint-enable takes rules, not a reason", "// eslint-enable -- the cache is cold\nx;\n", "javascript"],
+  ["prettier-ignore takes nothing after it", "// prettier-ignore because aligned\nx;\n", "javascript"],
+  ["a ts directive with a description is prose", "// @ts-expect-error the upstream type is wrong\nx;\n", "javascript"],
+  ["biome-ignore with an explanation is prose", "// biome-ignore lint/style: reason\nx;\n", "javascript"],
+  ["a webpack hint needs a literal value", "// webpackChunkName: the cache is cold\nx;\n", "javascript"],
+  ["a reference directive needs its attribute and closing", "/// <reference because the cache\nx;\n", "javascript"],
+  ["clippy:: is an attribute, never a comment", "// clippy:: the cache is cold\nfn a() {}\n", "rust"],
+  ["noqa takes codes, not prose", "# noqa: the cache is cold\nx = 1\n", "python"],
+  ["a second comment after type: ignore is prose", "x = 1  # type: ignore  # because pandas\n", "python"],
+  ["a reason after a shellcheck directive is prose", "# shellcheck disable=SC2086 because quoting\necho a\n", "shell"],
+];
+
 const EXEMPT: [string, string, CommentSyntax][] = [
   ["eslint pragma", "// eslint-disable-next-line no-console\nx;\n", "javascript"],
   ["eslint block pragma on one line", "/* eslint-disable no-console */\nx;\n", "javascript"],
@@ -40,10 +61,15 @@ const EXEMPT: [string, string, CommentSyntax][] = [
   ["vite hint", "import(/* @vite-ignore */ p);\n", "javascript"],
   ["coverage hint", "/* istanbul ignore next */\nx;\n", "javascript"],
   ["prettier", "// prettier-ignore\nx;\n", "javascript"],
-  ["biome", "// biome-ignore lint/style: reason\nx;\n", "javascript"],
-  ["SPDX header", "// SPDX-License-Identifier: MIT\nx;\n", "javascript"],
-  ["license block", "/**\n * @license MIT\n * Some text\n */\nx;\n", "javascript"],
-  ["multi-line copyright run", "// Copyright 2026 Someone\n// Licensed under MIT\nx;\n", "javascript"],
+  ["biome", "// biome-ignore lint/suspicious/noDebugger\nx;\n", "javascript"],
+  ["eslint-enable with rules", "/* eslint-enable no-console, no-alert */\nx;\n", "javascript"],
+  ["several webpack hints", 'import(/* webpackChunkName: "a", webpackPrefetch: true */ "./a");\n', "javascript"],
+  ["SPDX header", "// SPDX-License-Identifier: MIT OR Apache-2.0\nx;\n", "javascript"],
+  ["license block", "/**\n * @license MIT\n */\nx;\n", "javascript"],
+  ["copyright and SPDX lines", "// Copyright 2026 Someone\n// SPDX-License-Identifier: MIT\nx;\n", "javascript"],
+  ["noqa with codes", "import os  # noqa: F401, E501\n", "python"],
+  ["type ignore with codes", "x = f()  # type: ignore[attr-defined]\n", "python"],
+  ["shellcheck with several directives", "# shellcheck disable=SC1090 source=/dev/null\n. x\n", "shell"],
   ["license header under a shebang", "#!/usr/bin/env node\n// Copyright (c) 2026 Someone\nx;\n", "javascript"],
   ["shebang", "#!/usr/bin/env bash\necho 1\n", "shell"],
   ["shellcheck", "# shellcheck disable=SC2086\necho a\n", "shell"],
@@ -58,6 +84,10 @@ describe("commentFactsOf", () => {
     expect(commentLines(source, syntax)).toEqual(lines);
   });
 
+  test.each(PROSE_AFTER_A_DIRECTIVE)("%s", (_what, source, syntax) => {
+    expect(commentLines(source, syntax)).toEqual([1]);
+  });
+
   test.each(EXEMPT)("tool-read comment is exempt: %s", (_what, source, syntax) => {
     expect(commentLines(source, syntax)).toEqual([]);
   });
@@ -66,5 +96,11 @@ describe("commentFactsOf", () => {
     const facts = commentFactsOf("} // end a\n// about b\n@cache\nfunction b() {}\n", "javascript");
     expect(facts.lead_in_lines).toEqual([2, 3]);
     expect(commentFactsOf("/// doc\n#[inline]\nfn f() {}\n", "rust").lead_in_lines).toEqual([1, 2]);
+  });
+
+  test("a decorator spanning several lines keeps the comment above it attached", () => {
+    const source = "class S {\n  // why\n  @Retry({\n    times: 3,\n  })\n  run() {\n    return 1;\n  }\n}\n";
+    expect(commentFactsOf(source, "javascript").lead_in_lines).toEqual([2, 3, 4, 5]);
+    expect(commentFactsOf("/// doc\n#[derive(\n    Debug,\n)]\nstruct A;\n", "rust").lead_in_lines).toEqual([1, 2, 3, 4]);
   });
 });
