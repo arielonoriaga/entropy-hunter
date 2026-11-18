@@ -275,7 +275,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     function_complexity: 15,
     new_duplicated_lines: 6,
     nesting_depth: 4,
-    comments: true,
+    comments: false,
   },
   scoring: {
     complexity_avg_cap: 10,

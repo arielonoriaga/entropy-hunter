@@ -6,6 +6,12 @@ import { checkRepo, recordWaiver, type CheckResult } from "../src/check";
 import { GitError } from "../src/git";
 import { Storage } from "../src/storage";
 import { DEFAULT_CONFIG } from "../src/types";
+
+const COMMENTS_GATED = { ...DEFAULT_CONFIG, gate: { ...DEFAULT_CONFIG.gate, comments: true } };
+
+test("the comments gate ships switched off until a repo opts in", () => {
+  expect(DEFAULT_CONFIG.gate.comments).toBe(false);
+});
 import { branchy, tempRepo, type TempRepo } from "./support";
 
 const cleanup: string[] = [];
@@ -21,7 +27,7 @@ beforeEach(() => {
 });
 
 const check = (storage: Storage | null = null, only: string[] | null = null, base = "HEAD"): CheckResult =>
-  checkRepo(repo.path, DEFAULT_CONFIG, { base, since: "30d", only, touchedSince: null }, storage, null);
+  checkRepo(repo.path, COMMENTS_GATED, { base, since: "30d", only, touchedSince: null }, storage, null);
 const fileOf = (result: CheckResult, path: string) => result.files.find((f) => f.path === path)!;
 const rulesOf = (result: CheckResult, path: string) => fileOf(result, path).findings.map((f) => f.rule);
 
@@ -142,7 +148,7 @@ describe("entropy check", () => {
     const longAgo = new Date("2020-01-01T00:00:00Z");
     utimesSync(join(repo.path, "src/pricing.ts"), longAgo, longAgo);
     const options = { base: "HEAD", since: "30d", only: null, touchedSince: Date.now() - 60_000 };
-    const result = checkRepo(repo.path, DEFAULT_CONFIG, options, null, null);
+    const result = checkRepo(repo.path, COMMENTS_GATED, options, null, null);
     expect(result.files.map((f) => f.path)).toEqual(["src/util.ts"]);
     expect(result.verdict).toBe("pass");
   });
