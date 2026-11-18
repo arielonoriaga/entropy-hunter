@@ -43,11 +43,11 @@ export function joinPath(...parts: string[]): string {
 }
 
 function parseJsonc(text: string): any {
-  const noComments = stripCommentsAndStrings(text, { keepStrings: true, singleQuotes: false });
+  const noComments = stripCommentsAndStrings(text, "json", "keep-strings");
   try {
     return JSON.parse(noComments.replace(/,(\s*[}\]])/g, "$1"));
   } catch {
-    return null; // a config we cannot read contributes no aliases
+    return null;
   }
 }
 

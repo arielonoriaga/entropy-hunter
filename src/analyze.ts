@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import {
-  FREE_NESTING, SIGNALS, type AnalysisResult, type EntropyConfig, type FileFacts, type FileMetrics,
+  ANALYSIS_RESULT_VERSION, FREE_NESTING, SIGNALS, type AnalysisResult, type EntropyConfig, type FileFacts, type FileMetrics,
   type ArchViolation, type Signal, type Summary,
 } from "./types";
 import { loadAliases } from "./aliases";
@@ -73,12 +73,16 @@ interface CachedBase {
   mg: { numbers: number; strings: number };
   gd: { groups: number; max: number; prefix: string };
   nest: Nesting;
-  comments: number[];
 }
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v16";
+const CACHE_VERSION_CHANGES = {
+  v15: "control-flow nesting depth",
+  v16: "function end lines",
+  v17: "brace-matched function spans; JSX-, heredoc- and hash-comment-aware stripping",
+} as const;
+const CACHE_VERSION = Object.keys(CACHE_VERSION_CHANGES).at(-1)!;
 
 export type ProgressFn = (message: string) => void;
 
@@ -116,7 +120,6 @@ function measure(analyzer: LanguageAnalyzer, src: string): CachedBase {
     mg: analyzer.magic(src),
     gd: { groups: guards.length, max: worstGuard.count, prefix: worstGuard.prefix },
     nest: analyzer.nesting(src),
-    comments: analyzer.commentLines(src),
   };
 }
 
@@ -198,6 +201,7 @@ interface Measured {
   memo: BaseMemo;
 }
 
+// Pass 1: per-file facts — measured once per content, cached after.
 function measureFiles(
   tree: SourceTree,
   churnMap: Map<string, FileChurn>,
@@ -221,7 +225,7 @@ function measureFiles(
     }
     const src = tree.read(path);
     if (src === null) {
-      files_skipped.push(path);
+      files_skipped.push(path); // unreadable: deleted mid-run, permissions, non-UTF8
       continue;
     }
     const analyzer = analyzerFor(path)!;
@@ -239,6 +243,7 @@ function measureFiles(
       if (storage) cacheWrites.push(toCacheRow(path, contentHash, base));
     }
     memo.set(path, { content_hash: contentHash, base });
+    // Both depend on which files exist, so neither is cached; both are cheap.
     const deps = analyzer.resolve(base.imports, path, fileSet, aliases);
     const tc = analyzer.testCoverage(src, path, fileSet);
 
@@ -296,7 +301,6 @@ function measureFiles(
       in_cycle: false,
       transitive_dependents: 0,
       arch_violations: 0,
-      comment_lines: base.comments,
     });
   }
 
@@ -528,7 +532,7 @@ export function analyzeTree(
     .slice(0, hw.limit);
 
   const result: AnalysisResult = {
-    version: 14,
+    version: ANALYSIS_RESULT_VERSION,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,

@@ -196,7 +196,7 @@ call for the changed files), so a check costs about two warm runs.
 | `nesting` | fail | control flow is nested deeper than `nesting_depth` (4) **and** deeper than it was — names the line and function |
 | `cycle` | fail | the file is on a dependency cycle and was not before |
 | `architecture` | fail | inner→outer layer imports rose |
-| `comments` | fail | a function the change touched (an added or modified line in it, or a deleted line inside it) still carries comments — names the function and the lines; or a new comment line outside any function. A comment directly above a function belongs to it. Tool-read comments are exempt: shebang, lint/type pragmas (`eslint`, `@ts-`, `biome-ignore`, `noqa`, `shellcheck`, `NOLINT`, …), license headers, `/// <reference`, bundler hints, Rust `// SAFETY:`. Doc comments are not exempt. Untouched functions are never reported, so comments go away function by function. `[gate] comments = false` turns it off |
+| `comments` | fail | a function the change touched (an added or modified line in it, a deleted line inside it, or a statement replaced by a blank line) still carries comments — names the function and the lines; or a new comment line outside any function. Comment-only lines directly above a function belong to it, also across decorators/attributes (`@cache`, `#[inline]`); a trailing comment on the closing line of the function above belongs to that function. Tool-read comments are exempt line by line, only in their exact forms: shebang on line 1, lint/type pragmas (`eslint-disable…`, `@ts-expect-error`, `biome-ignore`, `noqa`, `type: ignore`, `shellcheck disable=`, `NOLINT`, `rustfmt::skip`, …), `/// <reference`, bundler hints (`webpackChunkName:`, `@vite-ignore`), and a license block (`SPDX-License-Identifier:`, `@license`, `Copyright (c) <year>`) before the first line of code. Prose under a pragma is still reported. Doc comments are not exempt. Untouched functions are never reported, so comments go away function by function. Lua files are not checked. `[gate] comments = false` turns it off |
 | `entropy` | fail | `entropy_score` rose by ≥ `max_file_delta` (5), or a brand-new file starts at ≥ `new_file_entropy` (30) |
 | `untested` | warn | complexity ≥ `test_complexity_cap` with no test, and that is new |
 | `orphan` | warn | a new file nothing imports |
@@ -206,6 +206,17 @@ Exit code: 0 pass (warnings allowed), 1 fail, 2 error. Thresholds live in
 `[gate]`. A regression that is the right call can be accepted with a recorded
 reason (`--accept` + `--reason`); the acceptance is bound to the file's exact
 content, so any later edit is judged again.
+
+What the `comments` rule counts as touched comes from `git diff -U0` against
+the base, so two cases reach further than the edit looks:
+
+- A whitespace-only reformat (re-indenting, a formatter run) changes every
+  line it moves, so every function it reaches counts as touched and must shed
+  its comments in the same change. Reformat in a separate change, or accept
+  it with `--accept`.
+- A plain `mv` without `git mv` (or `git add`) shows up as a deleted file
+  plus an untracked one, and the untracked one is judged as a brand-new file:
+  every function in it is touched. Stage the move so git sees the rename.
 
 ### Zoom — at which level does the cause live?
 

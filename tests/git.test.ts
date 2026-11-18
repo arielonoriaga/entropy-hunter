@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  changedSince, churn, churnLog, currentCommit, GitError, isGitRepo, parseZeroContextPatch, readFilesAt, resolveBase,
+  changedLinesSince, changedSince, churn, churnLog, currentCommit, GitError, isGitRepo, parseZeroContextDiff, parseZeroContextPatch,
+  readFilesAt, resolveBase,
   sinceToDate, startOfUtcDay, summarizeChurn,
 } from "../src/git";
 import { tempRepo } from "./support";
@@ -228,5 +229,51 @@ describe("parseZeroContextPatch", () => {
     if (changes.kind !== "diff") throw new Error("expected a diff");
     expect([...changes.added]).toEqual([12]);
     expect([...changes.removedAfter]).toEqual([]);
+  });
+});
+
+describe("changed lines of many files", () => {
+  const linesOf = (changes: ReturnType<typeof parseZeroContextPatch> | undefined) =>
+    changes?.kind === "diff" ? { added: [...changes.added], removedAfter: [...changes.removedAfter] } : changes;
+
+  test("context lines advance the after side once and touch nothing", () => {
+    const patch = ["@@ -2,4 +2,4 @@", "-a", "+A", " ctx", " ctx2", "-b", "+B", "@@ -20 +20 @@", "-q", "+Q"].join("\n");
+    expect(linesOf(parseZeroContextPatch(patch))).toEqual({ added: [2, 5, 20], removedAfter: [] });
+  });
+
+  test("a statement replaced by a blank line touches that line", () => {
+    expect(linesOf(parseZeroContextPatch(["@@ -3 +3 @@", "-  doThing();", "+"].join("\n")))).toEqual({ added: [3], removedAfter: [] });
+  });
+
+  test("one diff splits per after-side path, whatever the hunk bodies look like", () => {
+    const diff = [
+      "diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1,2 @@", "-x", "++++ b/fake.ts", "+diff --git a/z b/z",
+      "diff --git a/old.ts b/new.ts", "similarity index 90%", "rename from old.ts", "rename to new.ts",
+      "--- a/old.ts", "+++ b/new.ts", "@@ -4,0 +5 @@", "+y",
+      'diff --git "a/sp ace\\t.ts" "b/sp ace\\t.ts"', '--- "a/sp ace\\t.ts"', '+++ "b/sp ace\\t.ts"', "@@ -2 +2 @@", "-p", "+q",
+      "diff --git a/gone.ts b/gone.ts", "--- a/gone.ts", "+++ /dev/null", "@@ -1 +0,0 @@", "-z",
+    ].join("\n");
+    const byPath = parseZeroContextDiff(diff);
+    expect([...byPath.keys()]).toEqual(["a.ts", "new.ts", "sp ace\t.ts"]);
+    expect(linesOf(byPath.get("a.ts"))).toEqual({ added: [1, 2], removedAfter: [] });
+    expect(linesOf(byPath.get("new.ts"))).toEqual({ added: [5], removedAfter: [] });
+    expect(linesOf(byPath.get("sp ace\t.ts"))).toEqual({ added: [2], removedAfter: [] });
+  });
+
+  test("changedLinesSince reads every file from one diff and marks new files whole", () => {
+    const r = tempRepo("entropy-lines-");
+    r.write("a.ts", "one\ntwo\nthree\n");
+    r.write("old.ts", "keep this long enough line so the rename is detected\nsecond\n");
+    const base = r.commit("base");
+    r.write("a.ts", "one\nTWO\nthree\n");
+    r.git("mv", "old.ts", "new.ts");
+    r.write("new.ts", "keep this long enough line so the rename is detected\nsecond\nthird\n");
+    r.write("fresh.ts", "x\n");
+    const { changed } = changedSince(r.path, base);
+    const lines = changedLinesSince(r.path, base, changed);
+    expect(linesOf(lines.get("a.ts"))).toEqual({ added: [2], removedAfter: [] });
+    expect(linesOf(lines.get("new.ts"))).toEqual({ added: [3], removedAfter: [] });
+    expect(lines.get("fresh.ts")).toEqual({ kind: "new-file" });
+    rmSync(r.path, { recursive: true, force: true });
   });
 });

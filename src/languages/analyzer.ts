@@ -1,6 +1,8 @@
 import type { AliasResolver } from "../aliases";
 import { NO_ALIASES } from "../aliases";
+import type { CommentFacts } from "./comments";
 import type { FunctionComplexity } from "../types";
+import { lineAt, lineStartsOf } from "./strip";
 
 export interface ComplexityResult {
   total: number;
@@ -321,7 +323,7 @@ export interface LanguageAnalyzer {
   sharedConditions(source: string): ConditionGroup[];
   // Deepest control-flow nesting — see braceNesting / indentNesting.
   nesting(source: string): Nesting;
-  commentLines(source: string): number[];
+  commentFacts(source: string): CommentFacts;
   // Does this file have a corresponding test (companion file or, for Rust,
   // an inline #[cfg(test)] module)? fileSet enables companion-file lookup.
   testCoverage(source: string, path: string, fileSet: Set<string>): TestCoverage;
@@ -380,15 +382,22 @@ export function extractBraceBlocks(
   return blocks;
 }
 
+export type FunctionSpans =
+  | { kind: "braces" }
+  | { kind: "indent"; lines_inside_strings: ReadonlySet<number> };
+
+export const BRACE_SPANS: FunctionSpans = { kind: "braces" };
+export const INDENT_SPANS: FunctionSpans = { kind: "indent", lines_inside_strings: new Set() };
+
 const CONTINUES_SIGNATURE = /^\s*(?:[)\]>{=:,.|&]|where\b|->)/;
 const CLOSES_BLOCK = /^\s*(?:\}|end\b)/;
 const indentOf = (line: string) => line.length - line.trimStart().length;
 
-function spanEndLine(lines: string[], header: number): number {
+function indentSpanEndLine(lines: string[], header: number, insideStrings: ReadonlySet<number>): number {
   const headerIndent = indentOf(lines[header]);
   let lastInside = header;
   for (let ln = header + 1; ln < lines.length; ln++) {
-    if (!lines[ln].trim()) continue;
+    if (!lines[ln].trim() || insideStrings.has(ln + 1)) continue;
     const indent = indentOf(lines[ln]);
     if (indent > headerIndent || CONTINUES_SIGNATURE.test(lines[ln])) {
       lastInside = ln;
@@ -400,26 +409,113 @@ function spanEndLine(lines: string[], header: number): number {
   return lastInside + 1;
 }
 
+const OPEN_BRACE = "{", CLOSE_BRACE = "}", STATEMENT_END = ";", LIST_SEPARATOR = ",", LINE_BREAK = "\n";
+
+function matchingBraces(stripped: string): Map<number, number> {
+  const closes = new Map<number, number>();
+  const open: number[] = [];
+  for (let at = 0; at < stripped.length; at++) {
+    const c = stripped[at];
+    if (c === OPEN_BRACE) open.push(at);
+    else if (c === CLOSE_BRACE && open.length) closes.set(open.pop()!, at);
+  }
+  return closes;
+}
+
+const OPENERS = new Set(["(", "["]);
+const CLOSERS = new Set([")", "]"]);
+const TYPE_LITERAL_FOLLOWS = new Set([":", "|", "&", "<"]);
+
+function opensTypeLiteral(stripped: string, brace: number): boolean {
+  let k = brace - 1;
+  while (k >= 0 && /\s/.test(stripped[k])) k--;
+  return TYPE_LITERAL_FOLLOWS.has(stripped[k]);
+}
+
+function blockBodyEnd(stripped: string, from: number, braces: Map<number, number>): number {
+  let depth = 0;
+  for (let at = from; at < stripped.length; at++) {
+    const c = stripped[at];
+    if (OPENERS.has(c)) depth++;
+    else if (CLOSERS.has(c) && depth-- === 0) return at;
+    else if (depth > 0) continue;
+    else if (c === STATEMENT_END || c === CLOSE_BRACE) return at;
+    else if (c === OPEN_BRACE) {
+      const close = braces.get(at) ?? stripped.length;
+      if (!opensTypeLiteral(stripped, at)) return close;
+      at = close;
+    }
+  }
+  return stripped.length;
+}
+
+function expressionBodyEnd(stripped: string, from: number): number {
+  let depth = 0;
+  let sawCode = false;
+  for (let at = from; at < stripped.length; at++) {
+    const c = stripped[at];
+    if (c === LINE_BREAK && depth === 0 && sawCode) return at - 1;
+    if (OPENERS.has(c) || c === OPEN_BRACE) depth++;
+    else if ((CLOSERS.has(c) || c === CLOSE_BRACE) && depth-- === 0) return at;
+    else if (depth === 0 && (c === STATEMENT_END || c === LIST_SEPARATOR)) return at;
+    sawCode ||= c.trim() !== "";
+  }
+  return stripped.length;
+}
+
+interface SpanSource {
+  stripped: string;
+  lines: string[];
+  lineStarts: number[];
+  braces: Map<number, number> | null;
+}
+
+function nameEnd(header: RegExpExecArray): number {
+  const group = header.slice(1).findIndex((g) => g !== undefined) + 1;
+  const nameSpan = group > 0 ? header.indices?.[group] : undefined;
+  return nameSpan ? nameSpan[1] : header.index + header[0].length;
+}
+
+function spanEndLine(source: SpanSource, spans: FunctionSpans, ln: number, header: RegExpExecArray, hasBody: boolean): number {
+  if (spans.kind === "indent") return indentSpanEndLine(source.lines, ln, spans.lines_inside_strings);
+  source.braces ??= matchingBraces(source.stripped);
+  const lineStart = source.lineStarts[ln];
+  const end = hasBody
+    ? blockBodyEnd(source.stripped, lineStart + nameEnd(header), source.braces)
+    : expressionBodyEnd(source.stripped, lineStart + header.index + header[0].length);
+  return Math.max(ln + 1, lineAt(source.lineStarts, Math.min(end, source.stripped.length - 1)));
+}
+
 function opensBlockBody(header: RegExpExecArray, line: string): boolean {
   const isArrowWithExpressionBody = /=>\s*$/.test(header[0]);
   return !isArrowWithExpressionBody || /^\s*\{/.test(line.slice(header.index + header[0].length));
 }
 
+const withMatchIndices = (pattern: RegExp) =>
+  pattern.hasIndices ? pattern : new RegExp(pattern.source, pattern.flags + "d");
+
 export function complexityFromMarkers(
   stripped: string,
   functionHeader: RegExp,
   decisionToken: RegExp,
+  spans: FunctionSpans,
 ): ComplexityResult {
   const functions: FunctionComplexity[] = [];
   const hasBody: boolean[] = [];
   const lines = stripped.split("\n");
+  const source: SpanSource = { stripped, lines, lineStarts: lineStartsOf(stripped), braces: null };
+  const header = withMatchIndices(functionHeader);
   for (let ln = 0; ln < lines.length; ln++) {
-    functionHeader.lastIndex = 0;
+    header.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = functionHeader.exec(lines[ln])) !== null) {
+    while ((m = header.exec(lines[ln])) !== null) {
       const nameFromWhicheverAlternativeMatched = m.slice(1).find((g) => g !== undefined) ?? "<anonymous>";
-      functions.push({ name: nameFromWhicheverAlternativeMatched, complexity: 1, line: ln + 1, end_line: spanEndLine(lines, ln) });
-      hasBody.push(opensBlockBody(m, lines[ln]));
+      const bodied = opensBlockBody(m, lines[ln]);
+      functions.push({
+        name: nameFromWhicheverAlternativeMatched, complexity: 1, line: ln + 1,
+        end_line: spanEndLine(source, spans, ln, m, bodied),
+      });
+      hasBody.push(bodied);
     }
   }
   let lastHeaderPassed = -1;

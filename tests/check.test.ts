@@ -263,3 +263,55 @@ describe("entropy check: comments", () => {
     expect(commentsOf(result, "src/two.ts")).toEqual([]);
   });
 });
+
+describe("entropy check: comments across languages", () => {
+  test("a trailing comment on the closing line above belongs to that function, not to the next one", () => {
+    const source = "export function a(): number {\n  return 1;\n} // end a\nexport function b(): number {\n  return 2;\n}\n";
+    repo.write("src/trail.ts", source);
+    repo.commit("trail");
+    repo.write("src/trail.ts", source.replace("return 2;", "return 3;"));
+    expect(commentsOf(check(), "src/trail.ts")).toEqual([]);
+    repo.write("src/trail.ts", source.replace("return 1;", "return 0;"));
+    expect(commentsOf(check(), "src/trail.ts")[0]).toContain("`a` (line 1) still carries 1 comment (line 3)");
+  });
+
+  test("a decorator between a comment and its function keeps the comment attached", () => {
+    const source = "# about f\n@cache\ndef f(x):\n    return x\n";
+    repo.write("src/deco.py", source);
+    repo.commit("deco");
+    repo.write("src/deco.py", source.replace("return x", "return x + 1"));
+    expect(commentsOf(check(), "src/deco.py")[0]).toContain("`f` (line 3) still carries 1 comment (line 1)");
+  });
+
+  test("floor division, globs, URLs, heredocs and JSX text are not comments", () => {
+    repo.write("src/calc.py", "def half(a):\n    return a // 2\n");
+    repo.write("src/run.sh", "build() {\n  cp src/* out/\n  curl http://example.com/x\n  cat <<EOF\n# usage text\nEOF\n}\n");
+    repo.write("src/view.tsx", "export function View() {\n  return <p>Don't miss https://example.com</p>;\n}\n");
+    repo.commit("languages");
+    repo.write("src/calc.py", "def half(a):\n    return a // 3\n");
+    repo.write("src/run.sh", "build() {\n  cp src/* dist/\n  curl http://example.com/x\n  cat <<EOF\n# usage text\nEOF\n}\n");
+    repo.write("src/view.tsx", "export function View() {\n  return <p>Don't miss https://example.org</p>;\n}\n// real\n");
+    const result = check();
+    expect(commentsOf(result, "src/calc.py")).toEqual([]);
+    expect(commentsOf(result, "src/run.sh")).toEqual([]);
+    expect(commentsOf(result, "src/view.tsx")).toEqual([
+      "new comment outside any function at line 4 — move the why into names/tests, then delete it",
+    ]);
+  });
+
+  test("a statement replaced by a blank line touches its function", () => {
+    repo.write("src/two.ts", TWO_FUNCTIONS);
+    repo.commit("two");
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("  const y = x + 1;", "").replace("return y;", "return x;"));
+    expect(commentsOf(check(), "src/two.ts")[0]).toContain("`a`");
+  });
+
+  test("both sides share one churn history, so a content-neutral edit leaves the file's entropy where it was", () => {
+    for (let k = 0; k < 4; k++) {
+      repo.write("src/busy.ts", "export const label = \"v" + k + "\";\n");
+      repo.commit("busy " + k);
+    }
+    repo.write("src/busy.ts", "export const label = \"vX\";\n");
+    expect(fileOf(check(), "src/busy.ts").delta).toBe(0);
+  });
+});

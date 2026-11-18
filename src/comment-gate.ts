@@ -1,4 +1,5 @@
 import type { LineChanges } from "./git";
+import type { CommentFacts } from "./languages/comments";
 import type { FunctionComplexity } from "./types";
 
 interface Span {
@@ -8,15 +9,15 @@ interface Span {
   end: number;
 }
 
-function spansOf(functions: FunctionComplexity[], comments: Set<number>): Span[] {
+function spansOf(functions: FunctionComplexity[], leadIn: Set<number>): Span[] {
   return functions
     .filter((f) => f.line > 0)
     .map((f) => {
       let start = f.line;
-      while (comments.has(start - 1)) start--;
+      while (leadIn.has(start - 1)) start--;
       return { name: f.name, line: f.line, start, end: Math.max(f.end_line, f.line) };
     })
-    .sort((a, b) => a.start - b.start);
+    .sort((a, b) => a.start - b.start || b.end - a.end);
 }
 
 function innermostOwners(spans: Span[]): (line: number) => Span | null {
@@ -44,18 +45,14 @@ function touchedSpans(spans: Span[], ownerOf: (line: number) => Span | null, cha
 const plural = (count: number, word: string) => (count === 1 ? word : `${word}s`);
 const MOVE_THE_WHY = "move the why into names/tests, then delete";
 
-export function commentFindings(
-  functions: FunctionComplexity[],
-  commentLines: number[],
-  changes: LineChanges,
-): string[] {
-  if (!commentLines.length) return [];
-  const spans = spansOf(functions, new Set(commentLines));
+export function commentFindings(functions: FunctionComplexity[], comments: CommentFacts, changes: LineChanges): string[] {
+  if (!comments.lines.length) return [];
+  const spans = spansOf(functions, new Set(comments.lead_in_lines));
   const ownerOf = innermostOwners(spans);
   const touched = touchedSpans(spans, ownerOf, changes);
   const carried = new Map<Span, number[]>();
   const loose: number[] = [];
-  for (const line of commentLines) {
+  for (const line of comments.lines) {
     const owner = ownerOf(line);
     if (owner && touched.has(owner)) carried.set(owner, [...(carried.get(owner) ?? []), line]);
     else if (!owner && (changes.kind === "new-file" || changes.added.has(line))) loose.push(line);

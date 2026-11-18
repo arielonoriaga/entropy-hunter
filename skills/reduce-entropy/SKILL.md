@@ -109,9 +109,10 @@ new comment line. Comments go stale and mislead; the code has to say it.
      state unrepresentable, or a test whose name states the rule.
 3rd. **Delete the comment.**
 
-Never move a comment somewhere else (above the function, into the module
-header, into a string) to get past the gate — the rule counts those too, and
-the why is still not in the code. Only touch functions the change needed;
+Never move a comment somewhere else to get past the gate: above the function
+or into the module header the rule still counts it, and in a string or a
+pragma-shaped line (`// eslint-disable because …`) the why is still not in
+the code. Only exact tool directives are exempt, and only their own line. Only touch functions the change needed;
 never sweep comments out of untouched code.
 
 ## Accepting a regression

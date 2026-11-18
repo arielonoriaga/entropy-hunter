@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { rustAnalyzer } from "../src/languages/rust";
-import { typescriptAnalyzer } from "../src/languages/typescript";
+import { jsxAnalyzer, typescriptAnalyzer } from "../src/languages/typescript";
+import { analyzerFor } from "../src/languages";
 import {
   braceNesting, countChainedComparisons, dependenciesOf, indentNesting,
 } from "../src/languages/analyzer";
@@ -510,5 +511,61 @@ describe("shell functions", () => {
 
   test("a call with arguments or a command substitution is not a declaration", () => {
     expect(shell.complexity('foo "a" {b}\nx=$(date)\n').functions).toEqual([]);
+  });
+});
+
+describe("function spans follow the code, not the indentation", () => {
+  const spans = (cx: { functions: { name: string; line: number; end_line: number }[] }) =>
+    cx.functions.map((f) => [f.name, f.line, f.end_line]);
+
+  test.each([
+    ["a template literal closing at column 0", "export function q() {\n  const sql = `\nSELECT 1\n`;\n  return sql;\n}\nconst after = 1;\n", [["q", 1, 6]]],
+    ["an unindented body", "function a() {\nconst x = 1;\nreturn x;\n}\nconst after = 1;\n", [["a", 1, 4]]],
+    ["a trailing comment after the closing brace stays with the function", "function a() {\n  return 1;\n} // end a\nfunction b() {\n  return 2;\n}\n", [["a", 1, 3], ["b", 4, 6]]],
+    ["a callback passed to a wrapper call", "export const h = wrap(async (req) => {\n  return 1;\n});\nconst z = 1;\n", [["h", 1, 3]]],
+    ["an object type in the return position is not the body", "function h(): { a: number } {\n  return { a: 1 };\n}\nconst z = 1;\n", [["h", 1, 3]]],
+    ["an expression-bodied arrow ends with its expression", "const f = (x) =>\n  x + 1;\nconst g = (y) => y * 2\nconst z = 1;\n", [["f", 1, 2], ["g", 3, 3]]],
+  ])("TypeScript: %s", (_what, source, expected) => {
+    expect(spans(typescriptAnalyzer.complexity(source))).toEqual(expected);
+  });
+
+  test("Go: a label at column 0 does not end the function", () => {
+    const go = genericAnalyzerFor("a.go")!;
+    expect(spans(go.complexity("func f() {\nLoop:\n\tfor {\n\t\tbreak Loop\n\t}\n}\nvar x = 1\n"))).toEqual([["f", 1, 6]]);
+  });
+
+  test("shell: a heredoc body with braces and quotes stays inside the function", () => {
+    const shell = genericAnalyzerFor("a.sh")!;
+    const source = "foo() {\n  cat <<EOF\ntext } with Don't\nEOF\n  echo DOLLAR{#x}\n}\nbar() {\n  echo 2\n}\n".replaceAll("DOLLAR", "$");
+    expect(spans(shell.complexity(source))).toEqual([["foo", 1, 6], ["bar", 7, 9]]);
+  });
+
+  test("Python: a triple-quoted string closing at column 0 does not end the function", () => {
+    const python = genericAnalyzerFor("a.py")!;
+    expect(spans(python.complexity('def f():\n    x = """\nhello\n"""\n    return x\n\nVALUE = 1\n'))).toEqual([["f", 1, 5]]);
+  });
+
+  test("Rust: a trait method without a body ends at its semicolon", () => {
+    expect(spans(rustAnalyzer.complexity("trait Q {\n    fn g(&self);\n    fn h(&self) {\n        1\n    }\n}\n"))).toEqual([["g", 2, 2], ["h", 3, 5]]);
+  });
+});
+
+describe("JSX files", () => {
+  test(".tsx and .jsx go to the JSX-aware analyzer, .ts does not", () => {
+    expect(analyzerFor("a.tsx")).toBe(jsxAnalyzer);
+    expect(analyzerFor("a.jsx")).toBe(jsxAnalyzer);
+    expect(analyzerFor("a.ts")).toBe(typescriptAnalyzer);
+    expect(jsxAnalyzer.language).toBe(typescriptAnalyzer.language);
+  });
+
+  test("an apostrophe in JSX text no longer swallows the functions after it", () => {
+    const source = "export function A() {\n  return <p>Don't do it</p>;\n}\nexport function B(x: number) {\n  if (x) return 1;\n  return 2;\n}\n";
+    expect(jsxAnalyzer.complexity(source).functions.map((f) => [f.name, f.complexity, f.end_line])).toEqual([["A", 1, 3], ["B", 2, 7]]);
+  });
+});
+
+describe("comment gate coverage by language", () => {
+  test("Lua is left out: its comments are not recognized", () => {
+    expect(genericAnalyzerFor("a.lua")!.commentFacts("-- why\nlocal x = 1 // 2\n")).toEqual({ lines: [], lead_in_lines: [] });
   });
 });

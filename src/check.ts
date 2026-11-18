@@ -8,10 +8,11 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import { analyzeTree, loadChurn, type ProgressFn } from "./analyze";
 import { commentFindings } from "./comment-gate";
-import { changedLines, changedSince, resolveBase, type LineChanges } from "./git";
+import { changedLinesSince, changedSince, resolveBase, type ChangedFile, type LineChanges } from "./git";
 import { analyzerFor } from "./languages";
+import type { CommentFacts } from "./languages/comments";
 import type { Storage } from "./storage";
-import { treeAt, workingTree } from "./tree";
+import { treeAt, workingTree, type SourceTree } from "./tree";
 import { SIGNALS, type EntropyConfig, type FileMetrics, type Signal } from "./types";
 
 export type Level = "fail" | "warn";
@@ -67,7 +68,12 @@ interface Sides {
   after: FileMetrics;
   after_by_path: Map<string, FileMetrics>;
   config: EntropyConfig;
-  changes: LineChanges | null;
+  comment_scope: CommentScope | null;
+}
+
+interface CommentScope {
+  facts: CommentFacts;
+  changes: LineChanges;
 }
 type Rule = (sides: Sides) => Finding[];
 
@@ -157,9 +163,9 @@ const RULES: Rule[] = [
     return [warn("untested", `complexity ${after.complexity_total} with no test covering it`)];
   },
 
-  function comments({ after, changes }) {
-    if (!changes) return [];
-    return commentFindings(after.functions, after.comment_lines, changes).map((message) => fail("comments", message));
+  function comments({ after, comment_scope }) {
+    if (!comment_scope) return [];
+    return commentFindings(after.functions, comment_scope.facts, comment_scope.changes).map((message) => fail("comments", message));
   },
 
   function orphan({ before, after }) {
@@ -230,8 +236,16 @@ export interface CheckOptions {
   touchedSince: number | null;
 }
 
-const commentGateApplies = (config: EntropyConfig, after: FileMetrics) =>
-  config.gate.comments && after.comment_lines.length > 0;
+function commentScopes(repo: string, base: string, tree: SourceTree, files: ChangedFile[]): Map<string, CommentScope> {
+  const facts = new Map<string, CommentFacts>();
+  for (const change of files) {
+    const source = tree.read(change.path);
+    const found = source === null ? null : analyzerFor(change.path)?.commentFacts(source);
+    if (found?.lines.length) facts.set(change.path, found);
+  }
+  const changes = changedLinesSince(repo, base, files.filter((change) => facts.has(change.path)));
+  return new Map([...facts].map(([path, found]) => [path, { facts: found, changes: changes.get(path)! }]));
+}
 
 export function checkRepo(
   repo: string,
@@ -269,12 +283,13 @@ export function checkRepo(
 
   const after_by_path = new Map(head.result.files.map((f) => [f.path, f]));
   const before_by_path = new Map(base.result.files.map((f) => [f.path, f]));
+  const comment_scopes = config.gate.comments ? commentScopes(repo, commit, tree, candidates) : new Map<string, CommentScope>();
   for (const change of candidates) {
     const after = after_by_path.get(change.path);
     if (!after) continue;
     const before = change.base_path ? before_by_path.get(change.base_path) ?? null : null;
-    const changes = commentGateApplies(config, after) ? changedLines(repo, commit, change) : null;
-    const findings = RULES.flatMap((rule) => rule({ before, after, after_by_path, config, changes }));
+    const comment_scope = comment_scopes.get(change.path) ?? null;
+    const findings = RULES.flatMap((rule) => rule({ before, after, after_by_path, config, comment_scope }));
     const failed = findings.some((f) => f.level === "fail");
     const waiver = failed ? waiverFor(storage, change.path, tree.read(change.path)) : null;
     result.files.push({

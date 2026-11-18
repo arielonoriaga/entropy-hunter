@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { analyzeRepo, analyzeTree, findCycles, normalize } from "../src/analyze";
 import { typescriptAnalyzer } from "../src/languages/typescript";
 import { detectDuplication, fingerprint, WINDOW } from "../src/duplication";
-import { DEFAULT_CONFIG, SIGNALS } from "../src/types";
+import { ANALYSIS_RESULT_VERSION_CHANGES, DEFAULT_CONFIG, SIGNALS } from "../src/types";
 import { countMagic, countRepeatedJsxText } from "../src/languages/analyzer";
 import { stripCommentsAndStrings } from "../src/languages/strip";
 
@@ -144,7 +144,7 @@ describe("analyzeRepo on fixtures", () => {
 
   test("magic signal: repeated visible JSX text is counted, dictionary references are not", () => {
     const source = `<button>Revisar</button><span>Revisar</span><span>{COPY.review}</span>`;
-    const view = stripCommentsAndStrings(source, { keepStrings: true });
+    const view = stripCommentsAndStrings(source, "c", "keep-strings");
     expect(countRepeatedJsxText(view)).toBe(1);
     expect(countMagic(view, view, /^\s*(?:export\s+)?const\b/).strings).toBe(1);
   });
@@ -275,8 +275,9 @@ describe("analyzeRepo on fixtures", () => {
     expect(sum).toBeCloseTo(result.summary.entropy, 0);
   });
 
-  test("JSON schema shape (version 13)", () => {
+  test("JSON schema shape (version 14): every version names what it changed", () => {
     expect(result.version).toBe(14);
+    expect(ANALYSIS_RESULT_VERSION_CHANGES[result.version]).toContain("end_line");
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);

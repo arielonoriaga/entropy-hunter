@@ -12,6 +12,11 @@ describe("validateConfig", () => {
     expect(() => validateConfig(DEFAULT_CONFIG)).not.toThrow();
   });
 
+  test("every boolean gate switch is exempt from the threshold check, whatever its name", () => {
+    const gate = { ...DEFAULT_CONFIG.gate, some_future_switch: false };
+    expect(() => validateConfig({ ...DEFAULT_CONFIG, gate } as typeof DEFAULT_CONFIG)).not.toThrow();
+  });
+
   test("a zero/negative scoring cap is rejected (would silently zero that signal)", () => {
     const bad = structuredClone(DEFAULT_CONFIG);
     bad.scoring.complexity_avg_cap = 0;

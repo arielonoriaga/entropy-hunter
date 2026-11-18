@@ -1,9 +1,9 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  braceNesting, complexityFromMarkers, countMagic, indentNesting, findSharedConditionGroups, isTestFile, normalizedLinesFrom,
+  BRACE_SPANS, braceNesting, complexityFromMarkers, INDENT_SPANS, type FunctionSpans, countMagic, indentNesting, findSharedConditionGroups, isTestFile, normalizedLinesFrom,
 } from "./analyzer";
-import { stripCommentsAndStrings } from "./strip";
-import { nonExemptCommentLines, type CommentSyntax } from "./comments";
+import { lineAt, lineStartsOf, stripCommentsAndStrings, type Dialect } from "./strip";
+import { commentFactsOf, NO_COMMENTS } from "./comments";
 
 // Language-agnostic fallback: churn, duplication, LOC and normalization are
 // exact; complexity and dependencies are approximate (regex heuristics over
@@ -30,9 +30,27 @@ const FN_HEADER =
 const FN_HEADER_BY_LANGUAGE = new Map([
   ["shell", new RegExp(`${FN_HEADER.source}|^\\s*([A-Za-z_][\\w:-]*)\\s*\\(\\)\\s*(?:\\{|\\(|$)`, "g")],
 ]);
-const COMMENT_SYNTAX_BY_LANGUAGE = new Map<string, CommentSyntax>([["shell", "shell"]]);
-const commentSyntaxOf = (language: string): CommentSyntax =>
-  COMMENT_SYNTAX_BY_LANGUAGE.get(language) ?? (HASH_COMMENT_LANGS.has(language) ? "hash" : "c");
+const dialectOf = (language: string): Dialect =>
+  language === "shell" ? "shell" : HASH_COMMENT_LANGS.has(language) ? "hash" : "c";
+const LANGUAGES_WITHOUT_COMMENT_GATE = new Set(["lua"]);
+const END_DELIMITED_LANGS = new Set(["ruby", "elixir", "lua"]);
+
+function linesStartingInsideStrings(source: string, dialect: Dialect): Set<number> {
+  const lineStarts = lineStartsOf(source);
+  const inside = new Set<number>();
+  stripCommentsAndStrings(source, dialect, "blank-strings", (from, to, kind) => {
+    if (kind === "comment") return;
+    for (let line = lineAt(lineStarts, from) + 1; line <= lineAt(lineStarts, to); line++) inside.add(line);
+  });
+  return inside;
+}
+
+function spansOf(language: string, source: string): FunctionSpans {
+  if (INDENT_LANGS.has(language)) {
+    return { kind: "indent", lines_inside_strings: linesStartingInsideStrings(source, dialectOf(language)) };
+  }
+  return END_DELIMITED_LANGS.has(language) ? INDENT_SPANS : BRACE_SPANS;
+}
 // Union of branch keywords; `and`/`or` only matter where they're operators —
 // elsewhere they can't appear as bare words outside stripped strings/comments.
 const DECISION =
@@ -44,9 +62,7 @@ function langOf(path: string): string | null {
 }
 
 function strip(source: string, path: string): string {
-  return stripCommentsAndStrings(source, {
-    hashComments: HASH_COMMENT_LANGS.has(langOf(path) ?? ""),
-  });
+  return stripCommentsAndStrings(source, dialectOf(langOf(path) ?? ""));
 }
 
 export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
@@ -56,7 +72,9 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     language,
     detect: (p) => langOf(p) === language,
     complexity(source) {
-      return complexityFromMarkers(strip(source, path), FN_HEADER_BY_LANGUAGE.get(language) ?? FN_HEADER, DECISION);
+      return complexityFromMarkers(
+        strip(source, path), FN_HEADER_BY_LANGUAGE.get(language) ?? FN_HEADER, DECISION, spansOf(language, source),
+      );
     },
     imports(source) {
       return [
@@ -99,10 +117,7 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     magic(source) {
       return countMagic(
         strip(source, path),
-        stripCommentsAndStrings(source, {
-          hashComments: HASH_COMMENT_LANGS.has(language),
-          keepStrings: true,
-        }),
+        stripCommentsAndStrings(source, dialectOf(language), "keep-strings"),
         /^\s*(?:const|final|static|readonly)\b|^[A-Z_][A-Z0-9_]*\s*=/,
       );
     },
@@ -124,8 +139,8 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     // Field-shape analysis needs typed syntax knowledge — dedicated plugins only.
     stateSpace: () => [],
 
-    commentLines(source) {
-      return nonExemptCommentLines(source, commentSyntaxOf(language));
+    commentFacts(source) {
+      return LANGUAGES_WITHOUT_COMMENT_GATE.has(language) ? NO_COMMENTS : commentFactsOf(source, dialectOf(language));
     },
 
     testCoverage(_source, from, fileSet) {

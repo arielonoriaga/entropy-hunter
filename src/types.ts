@@ -75,7 +75,6 @@ export interface FileFacts {
   in_cycle: boolean; // part of a dependency cycle (a strongly connected group of 2+ files)
   transitive_dependents: number; // files that can break when this one changes
   arch_violations: number; // imports that point inner→outer against [architecture] layers
-  comment_lines: number[];
 }
 
 // The signals blended into the Entropy Index, in scoring order. Each has a
@@ -154,13 +153,19 @@ export interface ArchViolation {
   to_layer: string;
 }
 
+export const ANALYSIS_RESULT_VERSION_CHANGES = {
+  13: "control-flow nesting: max_nesting, nesting_line, nesting_score",
+  14: "functions[].end_line: the line where each function's body ends",
+} as const;
+export const ANALYSIS_RESULT_VERSION = 14 satisfies keyof typeof ANALYSIS_RESULT_VERSION_CHANGES;
+
 export interface AnalysisResult {
   // v2: state; v3: clumping; v4: deadcode+architecture+reach; v5: magic;
   // v6: weighted/trending churn, files_skipped, hotspot why-strings;
   // v7: guard (shared-condition) signal; v8: test-coverage-presence signal;
   // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary;
   // v10: semantic (nested-optionality) signal; v11/v12: analyzer refinements
-  version: 14;
+  version: typeof ANALYSIS_RESULT_VERSION;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;

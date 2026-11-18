@@ -13,10 +13,10 @@ function nonPositive(name: string, section: Record<string, number>, why = ""): s
     .map(([key, value]) => `[${name}] ${key} must be a number > 0 (got ${value})${why}`);
 }
 
-const numericGateThresholds = ({ gate }: EntropyConfig): Record<string, number> => {
-  const { comments: _booleanSwitch, ...thresholds } = gate;
-  return thresholds;
-};
+const numericGateThresholds = ({ gate }: EntropyConfig): Record<string, number> =>
+  Object.fromEntries(
+    Object.entries(gate).filter((entry): entry is [string, number] => typeof entry[1] !== "boolean"),
+  );
 
 export function validateConfig(cfg: EntropyConfig): void {
   const errors: string[] = [];

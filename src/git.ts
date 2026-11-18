@@ -324,36 +324,109 @@ const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 const hunkCount = (raw: string | undefined) => (raw === undefined ? 1 : Number(raw));
 const isBlankChange = (patchLine: string) => !patchLine.slice(1).trim();
 
-export function parseZeroContextPatch(patch: string): LineChanges {
-  const added = new Set<number>();
-  const removedAfter = new Set<number>();
-  const lines = patch.split("\n");
-  let ln = 0;
-  while (ln < lines.length) {
-    const hunk = HUNK_HEADER.exec(lines[ln++]);
-    if (!hunk) continue;
-    let afterLine = Number(hunk[2]);
-    let removesCode = false;
-    let bodyLines = hunkCount(hunk[1]) + hunkCount(hunk[3]);
-    for (; bodyLines > 0 && ln < lines.length; ln++) {
-      const body = lines[ln];
-      if (body.startsWith("\\")) continue;
-      bodyLines--;
-      if (body.startsWith("+") && !isBlankChange(body)) added.add(afterLine);
-      if (body.startsWith("+")) afterLine++;
-      if (body.startsWith("-") && !isBlankChange(body)) removesCode = true;
-    }
-    if (removesCode && hunkCount(hunk[3]) === 0) removedAfter.add(Number(hunk[2]));
-  }
-  return { kind: "diff", added, removedAfter };
+interface HunkReading {
+  added: Set<number>;
+  removedAfter: Set<number>;
 }
 
-export function changedLines(repo: string, base: string, change: ChangedFile): LineChanges {
-  if (change.base_path === null) return { kind: "new-file" };
-  const pathspecs = [...new Set([change.base_path, change.path])].map((p) => `:(literal)${p}`);
-  return parseZeroContextPatch(
-    git(repo, ["diff", "-U0", "-M", "--no-color", "--no-ext-diff", base, "--", ...pathspecs]),
-  );
+function readHunk(lines: string[], at: number, hunk: RegExpExecArray, into: HunkReading): number {
+  let oldLeft = hunkCount(hunk[1]);
+  let newLeft = hunkCount(hunk[3]);
+  let afterLine = newLeft === 0 ? Number(hunk[2]) + 1 : Number(hunk[2]);
+  let removedCodeAfter = -1;
+  let addsCode = false;
+  const blankAdditions: number[] = [];
+  for (; (oldLeft > 0 || newLeft > 0) && at < lines.length; at++) {
+    const body = lines[at];
+    if (body.startsWith("\\")) continue;
+    if (body.startsWith("+")) {
+      if (isBlankChange(body)) blankAdditions.push(afterLine);
+      else into.added.add(afterLine);
+      addsCode ||= !isBlankChange(body);
+      afterLine++;
+      newLeft--;
+    } else if (body.startsWith("-")) {
+      if (!isBlankChange(body) && removedCodeAfter === -1) removedCodeAfter = afterLine - 1;
+      oldLeft--;
+    } else {
+      afterLine++;
+      oldLeft--;
+      newLeft--;
+    }
+  }
+  const replacedCodeWithBlanks = removedCodeAfter !== -1 && !addsCode;
+  if (replacedCodeWithBlanks && blankAdditions.length) blankAdditions.forEach((line) => into.added.add(line));
+  else if (replacedCodeWithBlanks) into.removedAfter.add(removedCodeAfter);
+  return at;
+}
+
+export function parseZeroContextPatch(patch: string): LineChanges {
+  const reading: HunkReading = { added: new Set(), removedAfter: new Set() };
+  const lines = patch.split("\n");
+  for (let at = 0; at < lines.length; ) {
+    const hunk = HUNK_HEADER.exec(lines[at++]);
+    if (hunk) at = readHunk(lines, at, hunk, reading);
+  }
+  return { kind: "diff", ...reading };
+}
+
+const C_ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", '"': '"', "\\": "\\", a: "\x07", b: "\b", f: "\f", v: "\v" };
+
+function unquotePatchPath(raw: string): string {
+  const path = raw.replace(/\t$/, "");
+  if (!path.startsWith('"')) return path;
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  for (let k = 1; k < path.length - 1; k++) {
+    if (path[k] !== "\\") {
+      bytes.push(...encoder.encode(path[k]));
+      continue;
+    }
+    const octal = /^[0-7]{3}/.exec(path.slice(k + 1, k + 4));
+    if (octal) bytes.push(parseInt(octal[0], 8));
+    else bytes.push(...encoder.encode(C_ESCAPES[path[k + 1]] ?? path[k + 1]));
+    k += octal ? 3 : 1;
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
+const AFTER_SIDE_HEADER = "+++ ";
+const AFTER_SIDE_PREFIX = "b/";
+
+export function parseZeroContextDiff(diff: string): Map<string, LineChanges> {
+  const byPath = new Map<string, LineChanges>();
+  const lines = diff.split("\n");
+  let reading: HunkReading | null = null;
+  for (let at = 0; at < lines.length; ) {
+    const line = lines[at++];
+    if (line.startsWith("diff --git ")) reading = null;
+    else if (line.startsWith(AFTER_SIDE_HEADER)) {
+      const path = unquotePatchPath(line.slice(AFTER_SIDE_HEADER.length));
+      reading = path.startsWith(AFTER_SIDE_PREFIX) ? { added: new Set(), removedAfter: new Set() } : null;
+      if (reading) byPath.set(path.slice(AFTER_SIDE_PREFIX.length), { kind: "diff", ...reading });
+    } else {
+      const hunk = reading && HUNK_HEADER.exec(line);
+      if (hunk) at = readHunk(lines, at, hunk, reading!);
+    }
+  }
+  return byPath;
+}
+
+const UNCHANGED: LineChanges = { kind: "diff", added: new Set(), removedAfter: new Set() };
+
+export function changedLinesSince(repo: string, base: string, files: ChangedFile[]): Map<string, LineChanges> {
+  const result = new Map<string, LineChanges>();
+  const diffed = files.filter((f) => f.base_path !== null);
+  for (const f of files) if (f.base_path === null) result.set(f.path, { kind: "new-file" });
+  if (!diffed.length) return result;
+  const pathspecs = [...new Set(diffed.flatMap((f) => [f.base_path!, f.path]))].map((p) => `:(literal)${p}`);
+  const diff = git(repo, [
+    "-c", "core.quotePath=false", "diff", "-U0", "--inter-hunk-context=0", "-M", "--no-color", "--no-ext-diff",
+    "--no-textconv", "--relative", base, "--", ...pathspecs,
+  ]);
+  const byPath = parseZeroContextDiff(diff);
+  for (const f of diffed) result.set(f.path, byPath.get(f.path) ?? UNCHANGED);
+  return result;
 }
 
 export function listFilesAt(repo: string, commit: string): string[] {

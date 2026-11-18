@@ -1,10 +1,10 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  braceNesting, complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
+  BRACE_SPANS, braceNesting, complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
   findSharedConditionGroups, isTestFile, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
-import { nonExemptCommentLines } from "./comments";
+import { commentFactsOf } from "./comments";
 
 const FN_HEADER = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/g;
 // Cyclomatic proxy: branch keywords + boolean operators + match arms (=>).
@@ -27,7 +27,7 @@ const MOD_SPEC = "mod ";
 // the same source — strip once, reuse (1-entry memo).
 let memo: { src: string; out: string } | null = null;
 function stripped(src: string): string {
-  if (memo?.src !== src) memo = { src, out: stripCommentsAndStrings(src, { singleQuotes: false }) };
+  if (memo?.src !== src) memo = { src, out: stripCommentsAndStrings(src, "rust") };
   return memo.out;
 }
 
@@ -55,7 +55,7 @@ export const rustAnalyzer: LanguageAnalyzer = {
   },
 
   complexity(source) {
-    return complexityFromMarkers(stripped(source), FN_HEADER, DECISION);
+    return complexityFromMarkers(stripped(source), FN_HEADER, DECISION, BRACE_SPANS);
   },
 
   imports(source) {
@@ -132,7 +132,7 @@ export const rustAnalyzer: LanguageAnalyzer = {
   magic(source) {
     return countMagic(
       stripped(source),
-      stripCommentsAndStrings(source, { singleQuotes: false, keepStrings: true }),
+      stripCommentsAndStrings(source, "rust", "keep-strings"),
       /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\b/,
     );
   },
@@ -146,7 +146,7 @@ export const rustAnalyzer: LanguageAnalyzer = {
     return braceNesting(stripped(source));
   },
 
-  commentLines: (source) => nonExemptCommentLines(source, "rust"),
+  commentFacts: (source) => commentFactsOf(source, "rust"),
 
   testCoverage(source, path) {
     if (isTestFile(path)) return { has_test: true, test_path: "" };

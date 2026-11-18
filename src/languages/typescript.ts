@@ -1,6 +1,6 @@
 import type { DependencyResult, LanguageAnalyzer } from "./analyzer";
 import {
-  braceNesting, complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
+  BRACE_SPANS, braceNesting, complexityFromMarkers, countMagic, extractBraceBlocks, fieldNames,
   findSharedConditionGroups, isTestFile, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 
@@ -8,8 +8,8 @@ const TEST_SUFFIXES = [
   ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
   ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx",
 ];
-import { stripCommentsAndStrings } from "./strip";
-import { nonExemptCommentLines } from "./comments";
+import { memoizedStrip, stripCommentsAndStrings } from "./strip";
+import { commentFactsOf } from "./comments";
 
 const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
@@ -39,20 +39,18 @@ const IMPORT_PATTERNS = [
 
 // The engine calls complexity/normalizedLines back-to-back on the same
 // source — strip once, reuse (1-entry memo).
-let memo: { src: string; out: string } | null = null;
-function stripped(src: string): string {
-  if (memo?.src !== src) memo = { src, out: stripCommentsAndStrings(src, { regexLiterals: true }) };
-  return memo.out;
-}
+const stripped = memoizedStrip("javascript");
+
+const CONST_DECLARATION = /^\s*(?:export\s+)?const\b/;
+const IF_HEADER = /^(\s*)if\s*\((.+)\)\s*\{?\s*$/;
+const JSX_EXTENSIONS = [".tsx", ".jsx"];
+
+const jsxStripped = memoizedStrip("jsx");
+
+const FN_HEADER_MATCHED_PER_LINE = new RegExp(FN_HEADER.source, "gd");
 
 function complexityHeaders(stripped: string) {
-  // complexityFromMarkers matches per line; the class-method alternative is
-  // anchored, which works line-by-line with the m flag.
-  return complexityFromMarkers(
-    stripped,
-    new RegExp(FN_HEADER.source, "g"),
-    DECISION,
-  );
+  return complexityFromMarkers(stripped, FN_HEADER_MATCHED_PER_LINE, DECISION, BRACE_SPANS);
 }
 
 function resolveRelative(spec: string, fromDir: string, fileSet: Set<string>): string | null {
@@ -130,20 +128,20 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
   magic(source) {
     return countMagic(
       stripped(source),
-      stripCommentsAndStrings(source, { keepStrings: true, regexLiterals: true }),
-      /^\s*(?:export\s+)?const\b/,
+      stripCommentsAndStrings(source, "javascript", "keep-strings"),
+      CONST_DECLARATION,
     );
   },
 
   sharedConditions(source) {
-    return findSharedConditionGroups(stripped(source), /^(\s*)if\s*\((.+)\)\s*\{?\s*$/);
+    return findSharedConditionGroups(stripped(source), IF_HEADER);
   },
 
   nesting(source) {
     return braceNesting(stripped(source));
   },
 
-  commentLines: (source) => nonExemptCommentLines(source, "javascript"),
+  commentFacts: (source) => commentFactsOf(source, "javascript"),
 
   testCoverage(_source, path, fileSet) {
     if (isTestFile(path)) return { has_test: true, test_path: "" };
@@ -182,4 +180,20 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
       };
     });
   },
+};
+
+export const jsxAnalyzer: LanguageAnalyzer = {
+  ...typescriptAnalyzer,
+  detect: (path) => JSX_EXTENSIONS.some((extension) => path.endsWith(extension)),
+  complexity: (source) => complexityHeaders(jsxStripped(source)),
+  normalizedLines: (source) => normalizedLinesFrom(jsxStripped(source)),
+  magic: (source) =>
+    countMagic(
+      jsxStripped(source),
+      stripCommentsAndStrings(source, "jsx", "keep-strings"),
+      CONST_DECLARATION,
+    ),
+  sharedConditions: (source) => findSharedConditionGroups(jsxStripped(source), IF_HEADER),
+  nesting: (source) => braceNesting(jsxStripped(source)),
+  commentFacts: (source) => commentFactsOf(source, "jsx"),
 };
