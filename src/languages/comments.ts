@@ -125,6 +125,25 @@ function firstCodeLine(source: Source): number {
   return index === -1 ? source.strippedLines.length + 1 : index + 1;
 }
 
+const RUST_DOC_LINE = /^\s*\/\/[\/!]/;
+const CLIPPY_DOC_SECTION = /^\s*\/\/[\/!]\s*#\s+(?:Errors|Panics|Safety)\b/;
+
+function clippyRequiredDocBlockLines(source: Source, dialect: Dialect): number[] {
+  if (dialect !== "rust") return [];
+  const lines = source.text.split("\n");
+  const required: number[] = [];
+  for (let start = 0; start < lines.length; start++) {
+    if (!RUST_DOC_LINE.test(lines[start])) continue;
+    let end = start;
+    while (end + 1 < lines.length && RUST_DOC_LINE.test(lines[end + 1])) end++;
+    if (lines.slice(start, end + 1).some((line) => CLIPPY_DOC_SECTION.test(line))) {
+      for (let line = start; line <= end; line++) required.push(line + 1);
+    }
+    start = end;
+  }
+  return required;
+}
+
 function leadingLicenseLines(source: Source, regions: Region[]): Set<number> {
   const beforeCode = firstCodeLine(source);
   const licensed = new Set<number>();
@@ -162,16 +181,17 @@ function decoratorLines(strippedLines: string[]): number[] {
   return found;
 }
 
-function reportedLinesOf(source: Source, region: Region, licensed: Set<number>): number[] {
+function reportedLinesOf(source: Source, region: Region, exemptBlocks: Set<number>): number[] {
   const lines = linesOf(source, region).map((line) => ({ line, body: bodyOnLine(source, region, line) }));
   const exempt = ({ line, body }: { line: number; body: string }) =>
-    licensed.has(line) ||
+    exemptBlocks.has(line) ||
     (isShebang(source, line) && region.from === 0) ||
     source.directive.test(body) ||
     (source.declaresEncoding && line <= LAST_ENCODING_LINE && ENCODING_DECLARATION.test(body));
   const withText = lines.filter(({ body }) => body !== "");
   const regionSaysSomething = withText.length === 0 || withText.some((entry) => !exempt(entry));
   return lines
+    .filter((entry) => !exemptBlocks.has(entry.line))
     .filter((entry) => (entry.body === "" ? regionSaysSomething : !exempt(entry)))
     .map(({ line }) => line);
 }
@@ -189,12 +209,12 @@ export function commentFactsOf(text: string, dialect: Dialect): CommentFacts {
     lineStarts: lineStartsOf(text),
     strippedLines: stripped.split("\n"),
   };
-  const licensed = leadingLicenseLines(source, regions);
+  const exemptBlocks = new Set([...leadingLicenseLines(source, regions), ...clippyRequiredDocBlockLines(source, dialect)]);
   const reported = new Set<number>();
   const covered = new Set<number>();
   for (const region of regions) {
     linesOf(source, region).forEach((line) => covered.add(line));
-    reportedLinesOf(source, region, licensed).forEach((line) => reported.add(line));
+    reportedLinesOf(source, region, exemptBlocks).forEach((line) => reported.add(line));
   }
   const commentOnly = [...covered].filter((line) => source.strippedLines[line - 1].trim() === "");
   const decorators = decoratorLines(source.strippedLines);

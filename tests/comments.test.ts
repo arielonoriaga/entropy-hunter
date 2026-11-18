@@ -99,6 +99,25 @@ const EXEMPT: [string, string, CommentSyntax][] = [
   ["shellcheck source directive", "# shellcheck source=./lib.sh\n. ./lib.sh\n", "shell"],
 ];
 
+describe("clippy-required rust doc sections", () => {
+  test("a doc block carrying # Errors, # Panics or # Safety is read by clippy pedantic, so it is exempt as a whole", () => {
+    for (const heading of ["Errors", "Panics", "Safety"]) {
+      const source = `/// Loads the graph.\n///\n/// # ${heading}\n/// When the seed row is missing.\npub fn f() {}\n`;
+      expect(commentLines(source, "rust")).toEqual([]);
+    }
+  });
+
+  test("a doc block without a clippy section, and the same text outside rust, are still reported", () => {
+    expect(commentLines("/// Loads the graph.\npub fn f() {}\n", "rust")).toEqual([1]);
+    expect(commentLines("// # Errors\n// when missing\nfunction f() {}\n", "javascript")).toEqual([1, 2]);
+  });
+
+  test("only the doc block that holds the section is exempt, not a separate block above it", () => {
+    const source = "/// unrelated note\n\n/// # Errors\n/// when missing\npub fn f() {}\n";
+    expect(commentLines(source, "rust")).toEqual([1]);
+  });
+});
+
 describe("commentFactsOf", () => {
   test.each(REPORTED)("%s", (_what, source, syntax, lines) => {
     expect(commentLines(source, syntax)).toEqual(lines);
