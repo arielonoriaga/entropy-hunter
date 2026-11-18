@@ -9,8 +9,8 @@ import { DEFAULT_CONFIG } from "../src/types";
 
 const COMMENTS_GATED = { ...DEFAULT_CONFIG, gate: { ...DEFAULT_CONFIG.gate, comments: true } };
 
-test("the comments gate ships switched off until a repo opts in", () => {
-  expect(DEFAULT_CONFIG.gate.comments).toBe(false);
+test("the comments gate is on by default; a repo opts out with [gate] comments = false", () => {
+  expect(DEFAULT_CONFIG.gate.comments).toBe(true);
 });
 import { branchy, tempRepo, type TempRepo } from "./support";
 
