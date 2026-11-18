@@ -25,7 +25,9 @@ const FN_HEADER = new RegExp(
     // sibling memo/effect gets its own header instead of donating its decision
     // points to whatever real function preceded it (see the "wrapped in a
     // single hook call" / "generic type arguments" regressions).
-    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:[A-Za-z_$][\w$]*(?:<[^>]*>)?\(\s*)?(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)/.source,
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:[A-Za-z_$][\w$]*(?:<[^>]*>)?\(\s*)?(?:async\s+)?TYPE_PARAMETERS(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)/.source,
+    /\bexport\s+(default)\s+(?:async\s+)?function\s*\*?\s*TYPE_PARAMETERS\(/.source,
+    /^\s*(?:(?:public|private|protected|static|readonly|override)\s+)*(?!(?:const|let|var|return|yield|await|typeof|new|delete|void)\b)([A-Za-z_$][\w$]*)\s*(?:!|\?)?(?::[^=]+)?=\s*(?:async\s+)?TYPE_PARAMETERS(?:\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)/.source,
     /^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|get\s+|set\s+|override\s+)*(?!(?:if|for|while|switch|catch|return|else|do|try|function|new|typeof|await|yield)\b)([A-Za-z_$][\w$]*)\s*TYPE_PARAMETERS\([^;=]*\)\s*(?::\s*[^{;=]+)?\{\s*$/.source,
   ].join("|").replaceAll("TYPE_PARAMETERS", TYPE_PARAMETERS),
   "gm",

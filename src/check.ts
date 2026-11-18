@@ -74,6 +74,7 @@ interface Sides {
 interface CommentScope {
   facts: CommentFacts;
   changes: LineChanges;
+  source: string;
 }
 type Rule = (sides: Sides) => Finding[];
 
@@ -165,7 +166,7 @@ const RULES: Rule[] = [
 
   function comments({ after, comment_scope }) {
     if (!comment_scope) return [];
-    return commentFindings(after.functions, comment_scope.facts, comment_scope.changes).map((message) => fail("comments", message));
+    return commentFindings(after.functions, comment_scope.facts, comment_scope.changes, comment_scope.source).map((message) => fail("comments", message));
   },
 
   function orphan({ before, after }) {
@@ -237,14 +238,14 @@ export interface CheckOptions {
 }
 
 function commentScopes(repo: string, base: string, tree: SourceTree, files: ChangedFile[]): Map<string, CommentScope> {
-  const facts = new Map<string, CommentFacts>();
+  const facts = new Map<string, { found: CommentFacts; source: string }>();
   for (const change of files) {
     const source = tree.read(change.path);
     const found = source === null ? null : analyzerFor(change.path)?.commentFacts(source);
-    if (found?.lines.length) facts.set(change.path, found);
+    if (source !== null && found?.lines.length) facts.set(change.path, { found, source });
   }
   const changes = changedLinesSince(repo, base, files.filter((change) => facts.has(change.path)));
-  return new Map([...facts].map(([path, found]) => [path, { facts: found, changes: changes.get(path)! }]));
+  return new Map([...facts].map(([path, { found, source }]) => [path, { facts: found, changes: changes.get(path)!, source }]));
 }
 
 export function checkRepo(

@@ -28,16 +28,25 @@ function innermostOwners(spans: Span[]): (line: number) => Span | null {
   return (line) => owner[line] ?? null;
 }
 
-function touchedSpans(spans: Span[], ownerOf: (line: number) => Span | null, changes: LineChanges): Set<Span> {
+const indentWidth = (text: string | undefined) => (text ?? "").length - (text ?? "").trimStart().length;
+
+function spanHoldingRemoval(spans: Span[], ownerOf: (line: number) => Span | null, line: number, removedIndent: number, sourceLines: string[]): Span | null {
+  const owner = ownerOf(line);
+  if (owner && owner === ownerOf(line + 1)) return owner;
+  const holders = spans.filter((span) => span.line <= line && line <= span.end && indentWidth(sourceLines[span.line - 1]) < removedIndent);
+  return holders.reduce<Span | null>((inner, span) => (!inner || span.line > inner.line ? span : inner), null);
+}
+
+function touchedSpans(spans: Span[], ownerOf: (line: number) => Span | null, changes: LineChanges, sourceLines: string[]): Set<Span> {
   if (changes.kind === "new-file") return new Set(spans);
   const touched = new Set<Span>();
   for (const line of changes.added) {
     const owner = ownerOf(line);
     if (owner) touched.add(owner);
   }
-  for (const line of changes.removedAfter) {
-    const owner = ownerOf(line);
-    if (owner && owner === ownerOf(line + 1)) touched.add(owner);
+  for (const [line, removedIndent] of changes.removedAfter) {
+    const holder = spanHoldingRemoval(spans, ownerOf, line, removedIndent, sourceLines);
+    if (holder) touched.add(holder);
   }
   return touched;
 }
@@ -45,11 +54,11 @@ function touchedSpans(spans: Span[], ownerOf: (line: number) => Span | null, cha
 const plural = (count: number, word: string) => (count === 1 ? word : `${word}s`);
 const MOVE_THE_WHY = "move the why into names/tests, then delete";
 
-export function commentFindings(functions: FunctionComplexity[], comments: CommentFacts, changes: LineChanges): string[] {
+export function commentFindings(functions: FunctionComplexity[], comments: CommentFacts, changes: LineChanges, source: string): string[] {
   if (!comments.lines.length) return [];
   const spans = spansOf(functions, new Set(comments.lead_in_lines));
   const ownerOf = innermostOwners(spans);
-  const touched = touchedSpans(spans, ownerOf, changes);
+  const touched = touchedSpans(spans, ownerOf, changes, source.split("\n"));
   const carried = new Map<Span, number[]>();
   const loose: number[] = [];
   for (const line of comments.lines) {

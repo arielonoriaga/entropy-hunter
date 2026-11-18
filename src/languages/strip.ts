@@ -21,10 +21,21 @@ const KEYWORD_BEFORE_REGEX = /(?:^|[^\w$])(?:return|typeof|case|in|of|delete|voi
 const MAX_KEYWORD_LENGTH = 7;
 const isSpace = (c: number) => c === 32 || c === 9 || c === NEWLINE || c === 13;
 
-function startsRegex(src: string, slash: number): boolean {
-  let k = slash - 1;
-  while (k >= 0 && isSpace(src.charCodeAt(k))) k--;
-  if (k === 1 && src.startsWith("#!")) return false; // shebang path, not `!/re/`
+function lastCodeBefore(src: string, at: number, comments: number[]): number {
+  let k = at - 1;
+  let pair = comments.length - 2;
+  for (;;) {
+    while (k >= 0 && isSpace(src.charCodeAt(k))) k--;
+    while (pair >= 0 && comments[pair] > k) pair -= 2;
+    if (pair < 0 || k >= comments[pair + 1]) return k;
+    k = comments[pair] - 1;
+  }
+}
+
+function startsRegex(src: string, slash: number, comments: number[]): boolean {
+  const k = lastCodeBefore(src, slash, comments);
+  const slashOfShebangPath = k === 1 && src.startsWith("#!");
+  if (slashOfShebangPath) return false;
   if (k < 0 || BEFORE_REGEX.has(src.charCodeAt(k))) return true;
   return KEYWORD_BEFORE_REGEX.test(src.slice(Math.max(0, k - MAX_KEYWORD_LENGTH), k + 1));
 }
@@ -103,6 +114,7 @@ interface ShellScan {
 
 interface Scan {
   dialect: Dialect;
+  comments: number[];
   jsxContexts: number[] | null;
   shell: ShellScan;
   from: number;
@@ -234,13 +246,13 @@ function jsxTextEnd(src: string, from: number): number {
 const afterJsxClose = (src: string, at: number, contexts: number[]) =>
   contexts[contexts.length - 1] === JSX_CHILDREN ? jsxTextEnd(src, at) : at;
 
-function startsJsxElement(src: string, at: number): boolean {
+function startsJsxElement(src: string, at: number, comments: number[]): boolean {
   JSX_ELEMENT_OPEN.lastIndex = at;
   if (!JSX_ELEMENT_OPEN.test(src)) return false;
   let k = at - 1;
   while (k >= 0 && isSpace(src.charCodeAt(k))) k--;
   const afterArrow = k > 0 && src.charCodeAt(k) === GREATER && src.charCodeAt(k - 1) === EQUALS;
-  return afterArrow || startsRegex(src, at);
+  return afterArrow || startsRegex(src, at, comments);
 }
 
 function jsxTagStep(src: string, i: number, c: number, contexts: number[]): number {
@@ -267,22 +279,22 @@ function jsxChildStep(src: string, i: number, c: number, contexts: number[]): nu
   return contexts.push(JSX_TAG), i + 1;
 }
 
-function jsxCodeStep(src: string, i: number, c: number, contexts: number[]): number {
+function jsxCodeStep(src: string, i: number, c: number, contexts: number[], comments: number[]): number {
   const inJsx = contexts.length > 0;
   if (c === OPEN_BRACE && inJsx) contexts.push(JSX_EXPRESSION);
   if (c === CLOSE_BRACE && inJsx) {
     contexts.pop();
     return afterJsxClose(src, i + 1, contexts);
   }
-  if (c === LESS && startsJsxElement(src, i)) contexts.push(JSX_TAG);
+  if (c === LESS && startsJsxElement(src, i, comments)) contexts.push(JSX_TAG);
   return c === OPEN_BRACE || c === CLOSE_BRACE || c === LESS || c === GREATER ? i + 1 : -1;
 }
 
-function jsxStep(src: string, i: number, c: number, contexts: number[]): number {
+function jsxStep(src: string, i: number, c: number, contexts: number[], comments: number[]): number {
   const top = contexts[contexts.length - 1];
   if (top === JSX_TAG || top === JSX_CLOSING_TAG) return jsxTagStep(src, i, c, contexts);
   if (top === JSX_CHILDREN) return jsxChildStep(src, i, c, contexts);
-  return jsxCodeStep(src, i, c, contexts);
+  return jsxCodeStep(src, i, c, contexts, comments);
 }
 
 const RUST_CHAR = /'(?:[^'\\\n\r]|[\uD800-\uDBFF][\uDC00-\uDFFF]|\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|[^\n]))'/y;
@@ -290,6 +302,49 @@ const RUST_CHAR = /'(?:[^'\\\n\r]|[\uD800-\uDBFF][\uDC00-\uDFFF]|\\(?:x[0-9A-Fa-
 function rustCharEnd(src: string, i: number): number {
   RUST_CHAR.lastIndex = i;
   return RUST_CHAR.test(src) ? RUST_CHAR.lastIndex : -1;
+}
+
+const DOLLAR = 36, OPEN_PAREN_CODE = 40, CLOSE_PAREN_CODE = 41;
+const MAX_SHELL_NESTING = 32;
+
+function shellSingleQuotedEnd(src: string, open: number): number {
+  const close = src.indexOf("'", open + 1);
+  return close === -1 ? src.length : close;
+}
+
+function shellBacktickEnd(src: string, open: number): number {
+  return stringEnd(src, open, BACKTICK);
+}
+
+function shellExpansionEnd(src: string, from: number, closer: number, nesting: number): number {
+  const opener = closer === CLOSE_BRACE ? OPEN_BRACE : OPEN_PAREN_CODE;
+  let depth = 0;
+  for (let j = from; j < src.length; j++) {
+    const c = src.charCodeAt(j);
+    if (c === BACKSLASH) j++;
+    else if (c === SINGLE && closer === CLOSE_PAREN_CODE) j = shellSingleQuotedEnd(src, j);
+    else if (c === DOUBLE) j = shellDoubleQuotedEnd(src, j, nesting + 1);
+    else if (c === BACKTICK) j = shellBacktickEnd(src, j);
+    else if (c === opener) depth++;
+    else if (c === closer && depth-- === 0) return j;
+  }
+  return src.length;
+}
+
+function shellDoubleQuotedEnd(src: string, open: number, nesting = 0): number {
+  if (nesting > MAX_SHELL_NESTING) return stringEnd(src, open, DOUBLE);
+  for (let j = open + 1; j < src.length; j++) {
+    const c = src.charCodeAt(j);
+    if (c === BACKSLASH) j++;
+    else if (c === DOUBLE) return j;
+    else if (c === BACKTICK) j = shellBacktickEnd(src, j);
+    else if (c === DOLLAR) {
+      const next = src.charCodeAt(j + 1);
+      if (next === OPEN_PAREN_CODE) j = shellExpansionEnd(src, j + 2, CLOSE_PAREN_CODE, nesting);
+      else if (next === OPEN_BRACE) j = shellExpansionEnd(src, j + 2, CLOSE_BRACE, nesting);
+    }
+  }
+  return src.length;
 }
 
 const TRIPLE_QUOTE_LENGTH = 3;
@@ -316,7 +371,7 @@ function scanQuoted(src: string, i: number, c: number, scan: Scan): void {
     const close = tripleQuotedEnd(src, bodyFrom, c);
     return region(scan, bodyFrom, close, Math.min(close + TRIPLE_QUOTE_LENGTH, src.length), "string");
   }
-  const close = stringEnd(src, i, c);
+  const close = scan.dialect === "shell" && c === DOUBLE ? shellDoubleQuotedEnd(src, i) : stringEnd(src, i, c);
   region(scan, i + 1, close, Math.min(close + 1, src.length), "string");
 }
 
@@ -327,7 +382,7 @@ function scanLiteral(src: string, i: number, c: number, scan: Scan): void {
     return;
   }
   if (c === SLASH) {
-    const close = REGEX_LITERALS.has(scan.dialect) && startsRegex(src, i) ? regexEnd(src, i) : -1;
+    const close = REGEX_LITERALS.has(scan.dialect) && startsRegex(src, i, scan.comments) ? regexEnd(src, i) : -1;
     if (close !== -1) region(scan, i + 1, close, close + 1, "opaque");
     return;
   }
@@ -337,7 +392,7 @@ function scanLiteral(src: string, i: number, c: number, scan: Scan): void {
 function scanRegionAt(src: string, i: number, c: number, scan: Scan): void {
   region(scan, i, i, i + 1, "comment");
   if (scan.jsxContexts) {
-    const afterJsx = jsxStep(src, i, c, scan.jsxContexts);
+    const afterJsx = jsxStep(src, i, c, scan.jsxContexts, scan.comments);
     if (afterJsx !== -1) return void (scan.resume = afterJsx);
   }
   if (scan.dialect === "shell" && (c === LESS || c === NEWLINE)) return scanHeredoc(src, i, c, scan);
@@ -358,7 +413,7 @@ export function stripCommentsAndStrings(
 ): string {
   const jsxContexts: number[] | null = dialect === "jsx" ? [] : null;
   const scan: Scan = {
-    dialect, jsxContexts, from: 0, to: 0, resume: 0, kind: "comment",
+    dialect, jsxContexts, comments: [], from: 0, to: 0, resume: 0, kind: "comment",
     shell: { bodyFrom: -1, bodyTo: -1, terminators: null, lineStart: 0, arithmeticScannedTo: 0, arithmeticDepth: 0 },
   };
   const keepStrings = view === "keep-strings";
@@ -376,6 +431,7 @@ export function stripCommentsAndStrings(
     scanRegionAt(src, i, c, scan);
     i = scan.resume;
     if (scan.to <= scan.from) continue;
+    if (scan.kind === "comment") scan.comments.push(scan.from, scan.to);
     if (onRegion) onRegion(scan.from, scan.to, scan.kind);
     if (keepStrings && scan.kind === "string") continue;
     if (scan.from > copiedUpTo) out.push(src.slice(copiedUpTo, scan.from));

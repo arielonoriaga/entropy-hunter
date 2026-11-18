@@ -353,3 +353,108 @@ describe("entropy check: comments across languages", () => {
     expect(fileOf(check(), "src/busy.ts").delta).toBe(0);
   });
 });
+
+const TOOL_READ_ONLY: [string, string, string, [string, string], [string, string]][] = [
+  [
+    "bundler, JSX and lint directives in TypeScript",
+    "src/tool.tsx",
+    [
+      "/** @jsxImportSource @emotion/react */",
+      "export function view(x: number) {",
+      "  const a = /*#__PURE__*/ make();",
+      "  const b = /* @__PURE__ */ make();",
+      "  // biome-ignore lint/style/noNonNullAssertion: checked above",
+      "  const c = x!;",
+      "  // @ts-expect-error the upstream type is wrong",
+      "  const d: string = x;",
+      "  // eslint-disable-next-line no-console -- the server swallows errors",
+      "  console.log(a, b, c, d);",
+      "  return import(/* webpackChunkName: \"v\" */ \"./v\");",
+      "}",
+      "",
+    ].join("\n"),
+    ["make();\n  const b", "make(1);\n  const b"],
+    ["  return import", "  // why\n  return import"],
+  ],
+  [
+    "coverage, formatter and type-checker pragmas in Python",
+    "src/tool.py",
+    "# -*- coding: utf-8 -*-\ndef f(x):\n    if x:  # pragma: no cover\n        return 1\n    y = g()  # type: ignore[attr-defined]  # noqa: E501\n    # fmt: off\n    z = [1,\n      2]\n    # fmt: on\n    return y  # pyright: ignore[reportGeneralTypeIssues]\n",
+    ["return 1", "return 2"],
+    ["    return y", "    # why\n    return y"],
+  ],
+  [
+    "a SAFETY comment in Rust",
+    "src/tool.rs",
+    "pub fn f(p: *const u8) -> u8 {\n    // SAFETY: the caller hands over a valid pointer\n    unsafe { *p }\n}\n",
+    ["unsafe { *p }", "unsafe { *p.add(0) }"],
+    ["    unsafe", "    // why\n    unsafe"],
+  ],
+  [
+    "nested quotes inside expansions and a shellcheck directive in shell",
+    "src/tool.sh",
+    'run() {\n  # shellcheck disable=SC2086 # splitting is wanted\n  x="DOLLAR(echo "a # b")"\n  y="DOLLAR{1:-"default # v"}"\n  z="BTecho "c # d"BT"\n  echo DOLLARx DOLLARy DOLLARz\n}\n',
+    ["echo DOLLARx", "printf %s DOLLARx"],
+    ["  z=", "  # why\n  z="],
+  ],
+];
+
+const SPAN_MISSES: [string, string, string, [string, string], string][] = [
+  [
+    "deleting the last statements of a Python function touches it",
+    "src/tail.py",
+    "def f(x):\n    # why f\n    y = x + 1\n    print(y)\n    return y\n\n\ndef g():\n    return 2\n",
+    ["    print(y)\n    return y\n", ""],
+    "`f` (line 1) still carries 1 comment (line 2)",
+  ],
+  [
+    "deleting the last statement of a method touches the method, not the class",
+    "src/tail_method.py",
+    "class A:\n    def m(self):\n        # why m\n        x = 1\n        return x\n",
+    ["        return x\n", ""],
+    "`m` (line 2) still carries 1 comment (line 3)",
+  ],
+  [
+    "a generic arrow function is a function",
+    "src/generic.ts",
+    "export const pick = <T,>(xs: T[]): T => {\n  // the first wins\n  return xs[0];\n};\n",
+    ["xs[0]", "xs[1]"],
+    "`pick` (line 1) still carries 1 comment (line 2)",
+  ],
+  [
+    "an async generic arrow with a constrained type parameter is a function",
+    "src/generic_async.ts",
+    "export const load = async <T extends { id: string }>(x: T): Promise<string> => {\n  // ids are opaque\n  return x.id;\n};\n",
+    ["x.id;", "x.id.trim();"],
+    "`load` (line 1) still carries 1 comment (line 2)",
+  ],
+];
+
+describe("entropy check: comments tools read, and spans the old headers missed", () => {
+  const shellText = (text: string) => text.replaceAll("DOLLAR", "$").replaceAll("BT", "`");
+
+  test.each(TOOL_READ_ONLY)("a touched function holding only %s passes, and a plain comment beside them fails", (_what, path, source, edit, why) => {
+    const [base, touched] = [shellText(source), shellText(source.replace(...edit))];
+    repo.write(path, base);
+    repo.commit(path);
+    repo.write(path, touched);
+    expect(commentsOf(check(), path)).toEqual([]);
+    repo.write(path, shellText(source.replace(...edit).replace(...why)));
+    expect(commentsOf(check(), path)).toHaveLength(1);
+  });
+
+  test.each(SPAN_MISSES)("%s", (_what, path, source, [from, to], expected) => {
+    repo.write(path, source);
+    repo.commit(path);
+    repo.write(path, source.replace(from, to));
+    expect(commentsOf(check(), path)[0]).toContain(expected);
+  });
+
+  test("removing a whole trailing method touches the method above it nowhere", () => {
+    const source = "class A:\n    def m(self):\n        # why m\n        return 1\n\n    def n(self):\n        return 2\n";
+    repo.write("src/drop.py", source);
+    repo.commit("drop");
+    repo.write("src/drop.py", source.replace("\n    def n(self):\n        return 2\n", ""));
+    expect(commentsOf(check(), "src/drop.py")).toEqual([]);
+  });
+});

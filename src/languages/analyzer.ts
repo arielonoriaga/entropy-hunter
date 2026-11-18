@@ -437,6 +437,15 @@ function opensTypeLiteral(stripped: string, brace: number): boolean {
   return TYPE_LITERAL_FOLLOWS.has(stripped[k]);
 }
 
+function insideTypeArguments(stripped: string, from: number, brace: number): boolean {
+  let open = 0;
+  for (let at = from; at < brace; at++) {
+    if (stripped[at] === LESS_THAN) open++;
+    else if (stripped[at] === GREATER_THAN && stripped[at - 1] !== ARROW_HEAD && open > 0) open--;
+  }
+  return open > 0;
+}
+
 function blockBodyEnd(stripped: string, from: number, braces: Map<number, number>): number {
   let depth = 0;
   for (let at = from; at < stripped.length; at++) {
@@ -447,7 +456,7 @@ function blockBodyEnd(stripped: string, from: number, braces: Map<number, number
     else if (c === STATEMENT_END || c === CLOSE_BRACE) return at;
     else if (c === OPEN_BRACE) {
       const close = braces.get(at) ?? stripped.length;
-      if (!opensTypeLiteral(stripped, at)) return close;
+      if (!opensTypeLiteral(stripped, at) && !insideTypeArguments(stripped, from, at)) return close;
       at = close;
     }
   }

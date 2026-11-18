@@ -525,6 +525,11 @@ describe("function spans follow the code, not the indentation", () => {
     ["a callback passed to a wrapper call", "export const h = wrap(async (req) => {\n  return 1;\n});\nconst z = 1;\n", [["h", 1, 3]]],
     ["an object type in the return position is not the body", "function h(): { a: number } {\n  return { a: 1 };\n}\nconst z = 1;\n", [["h", 1, 3]]],
     ["an expression-bodied arrow ends with its expression", "const f = (x) =>\n  x + 1;\nconst g = (y) => y * 2\nconst z = 1;\n", [["f", 1, 2], ["g", 3, 3]]],
+    ["a generic arrow", "const f = <T>(x: T) => {\n  return x;\n};\nconst z = 1;\n", [["f", 1, 3]]],
+    ["an async generic arrow whose type parameter holds braces", "const f = async <T extends { a: 1 }>(x: T) => {\n  return x;\n};\nconst z = 1;\n", [["f", 1, 3]]],
+    ["a class-field arrow", "class A {\n  handle = async (e: E) => {\n    return e;\n  };\n  other = 1;\n}\n", [["handle", 2, 4]]],
+    ["an object-literal arrow stays part of its enclosing code", "const o = {\n  run: (x: number) => {\n    return x;\n  },\n};\n", []],
+    ["an anonymous default export", "export default function () {\n  return 1;\n}\nconst z = 1;\n", [["default", 1, 3]]],
   ])("TypeScript: %s", (_what, source, expected) => {
     expect(spans(typescriptAnalyzer.complexity(source))).toEqual(expected);
   });

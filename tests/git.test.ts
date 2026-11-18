@@ -221,7 +221,14 @@ describe("parseZeroContextPatch", () => {
     expect(changes.kind).toBe("diff");
     if (changes.kind !== "diff") return;
     expect([...changes.added]).toEqual([2, 6, 7]);
-    expect([...changes.removedAfter]).toEqual([10]);
+    expect([...changes.removedAfter]).toEqual([[10, 0]]);
+  });
+
+  test("a pure deletion remembers how deep its shallowest removed code line was indented", () => {
+    const patch = ["@@ -7,3 +6,0 @@", "-        y = 2", "-", "-    return y"].join("\n");
+    const changes = parseZeroContextPatch(patch);
+    if (changes.kind !== "diff") throw new Error("expected a diff");
+    expect([...changes.removedAfter]).toEqual([[6, 4]]);
   });
 
   test("blank lines added or removed touch nothing", () => {
@@ -235,7 +242,7 @@ describe("parseZeroContextPatch", () => {
 
 describe("changed lines of many files", () => {
   const linesOf = (changes: ReturnType<typeof parseZeroContextPatch> | undefined) =>
-    changes?.kind === "diff" ? { added: [...changes.added], removedAfter: [...changes.removedAfter] } : changes;
+    changes?.kind === "diff" ? { added: [...changes.added], removedAfter: [...changes.removedAfter.keys()] } : changes;
 
   test("context lines advance the after side once and touch nothing", () => {
     const patch = ["@@ -2,4 +2,4 @@", "-a", "+A", " ctx", " ctx2", "-b", "+B", "@@ -20 +20 @@", "-q", "+Q"].join("\n");

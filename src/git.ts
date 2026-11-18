@@ -319,7 +319,7 @@ export function changedSince(repo: string, base: string): { changed: ChangedFile
 
 export type LineChanges =
   | { kind: "new-file" }
-  | { kind: "diff"; added: Set<number>; removedAfter: Set<number> };
+  | { kind: "diff"; added: Set<number>; removedAfter: Map<number, number> };
 
 const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 const hunkCount = (raw: string | undefined) => (raw === undefined ? 1 : Number(raw));
@@ -327,14 +327,17 @@ const isBlankChange = (patchLine: string) => !patchLine.slice(1).trim();
 
 interface HunkReading {
   added: Set<number>;
-  removedAfter: Set<number>;
+  removedAfter: Map<number, number>;
 }
+
+const indentWidth = (patchLine: string) => patchLine.length - 1 - patchLine.slice(1).trimStart().length;
 
 function readHunk(lines: string[], at: number, hunk: RegExpExecArray, into: HunkReading): number {
   let oldLeft = hunkCount(hunk[1]);
   let newLeft = hunkCount(hunk[3]);
   let afterLine = newLeft === 0 ? Number(hunk[2]) + 1 : Number(hunk[2]);
   let removedCodeAfter = -1;
+  let removedIndent = Infinity;
   let addsCode = false;
   const blankAdditions: number[] = [];
   for (; (oldLeft > 0 || newLeft > 0) && at < lines.length; at++) {
@@ -347,7 +350,10 @@ function readHunk(lines: string[], at: number, hunk: RegExpExecArray, into: Hunk
       afterLine++;
       newLeft--;
     } else if (body.startsWith("-")) {
-      if (!isBlankChange(body) && removedCodeAfter === -1) removedCodeAfter = afterLine - 1;
+      if (!isBlankChange(body)) {
+        if (removedCodeAfter === -1) removedCodeAfter = afterLine - 1;
+        removedIndent = Math.min(removedIndent, indentWidth(body));
+      }
       oldLeft--;
     } else {
       afterLine++;
@@ -357,12 +363,12 @@ function readHunk(lines: string[], at: number, hunk: RegExpExecArray, into: Hunk
   }
   const replacedCodeWithBlanks = removedCodeAfter !== -1 && !addsCode;
   if (replacedCodeWithBlanks && blankAdditions.length) blankAdditions.forEach((line) => into.added.add(line));
-  else if (replacedCodeWithBlanks) into.removedAfter.add(removedCodeAfter);
+  else if (replacedCodeWithBlanks) into.removedAfter.set(removedCodeAfter, removedIndent);
   return at;
 }
 
 export function parseZeroContextPatch(patch: string): LineChanges {
-  const reading: HunkReading = { added: new Set(), removedAfter: new Set() };
+  const reading: HunkReading = { added: new Set(), removedAfter: new Map() };
   const lines = patch.split("\n");
   for (let at = 0; at < lines.length; ) {
     const hunk = HUNK_HEADER.exec(lines[at++]);
@@ -420,7 +426,7 @@ const BINARY_NOTICE = "Binary files ";
 function noteContentUnchanged(section: Section | null, byPath: Map<string, LineChanges>): void {
   if (section?.body.kind !== "no-hunks-yet") return;
   const path = section.body.unchangedTarget ?? samePathOfHeader(section.header);
-  if (path !== null) byPath.set(path, { kind: "diff", added: new Set(), removedAfter: new Set() });
+  if (path !== null) byPath.set(path, { kind: "diff", added: new Set(), removedAfter: new Map() });
 }
 
 function unchangedTargetOf(line: string): string | null {
@@ -446,7 +452,7 @@ export function parseZeroContextDiff(diff: string): Map<string, LineChanges> {
     } else if (line.startsWith(AFTER_SIDE_HEADER)) {
       if (section) section.body = { kind: "hunks" };
       const path = unquotePatchPath(line.slice(AFTER_SIDE_HEADER.length));
-      reading = path.startsWith(AFTER_SIDE_PREFIX) ? { added: new Set(), removedAfter: new Set() } : null;
+      reading = path.startsWith(AFTER_SIDE_PREFIX) ? { added: new Set(), removedAfter: new Map() } : null;
       if (reading) byPath.set(path.slice(AFTER_SIDE_PREFIX.length), { kind: "diff", ...reading });
     } else {
       const hunk = reading && HUNK_HEADER.exec(line);

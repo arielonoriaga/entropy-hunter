@@ -13,30 +13,69 @@ interface Region {
 }
 
 const LEADING_COMMENT_MARKER = /^\s*(?:\/\/[/!]?|\/\*+!?|\*+(?!\/)|#+!?)?\s*/;
-const LINT_RULE = String.raw`[@\w][\w@/.-]*`;
-const LINT_RULES = String.raw`(?:\s+${LINT_RULE}(?:\s*,\s*${LINT_RULE})*)?`;
-const LINT_DIRECTIVE = "(?:disable(?:-next-line|-line)?|enable)";
-const WEBPACK_HINT = String.raw`webpack(?:ChunkName|Prefetch|Preload|Mode|Ignore|Exports|Include|Exclude|FetchPriority)\s*:\s*(?:"[^"]*"|'[^']*'|true|false|-?\d+)`;
-const PRAGMA_GRAMMARS = [
-  "eslint-" + LINT_DIRECTIVE + LINT_RULES,
-  "oxlint-" + LINT_DIRECTIVE + LINT_RULES,
-  "tslint:(?:disable|enable)(?:-next-line|-line)?(?::[\\w-]+(?:\\s+[\\w-]+)*)?",
-  "@ts-(?:ignore|expect-error|nocheck|check)",
+const WORD_END = String.raw`(?![\w-])`;
+const ENDS_IN_PUNCTUATION = /[:=$]$/;
+const directives = (...forms: string[]) => forms.map((form) => (ENDS_IN_PUNCTUATION.test(form) ? form : form + WORD_END));
+const EVERY_LANGUAGE = directives(
+  "NOLINT(?:NEXTLINE|BEGIN|END)?",
   "prettier-ignore",
-  "biome-ignore(?:-all|-start|-end)?(?:\\s+[\\w/-]+:?)?",
-  "NOLINT(?:NEXTLINE|BEGIN|END)?(?:\\([\\w.,*-]+\\))?",
-  "(?:noqa|NOQA)(?::\\s*[A-Z]+\\d+(?:\\s*,\\s*[A-Z]+\\d+)*)?",
-  "type:\\s*ignore(?:\\[[\\w-]+(?:\\s*,\\s*[\\w-]+)*\\])?",
-  "istanbul\\s+ignore\\s+(?:next|if|else|file)",
-  "(?:c8|v8)\\s+ignore\\s+(?:next(?:\\s+\\d+)?|start|stop|file)",
-  "pylint:\\s*(?:(?:disable|enable|disable-next)=[\\w-]+(?:\\s*,\\s*[\\w-]+)*|skip-file)",
-  "shellcheck(?:\\s+(?:disable|enable|source|source-path|shell|external-sources)=\\S+)+",
-  "rustfmt::skip",
-  "<reference\\s+(?:path|types|lib)=\"[^\"]*\"\\s*\\/>",
-  WEBPACK_HINT + "(?:\\s*,\\s*" + WEBPACK_HINT + ")*",
+  "@formatter:(?:on|off)",
+  "(?:cspell|spell-checker|codespell):",
+  "(?:cspell|spell-checker)-(?:disable|enable)(?:-next-line|-line)?",
+  "gitleaks:allow",
+  "nosemgrep",
+  "NOSONAR",
+  "noinspection",
+  "language=",
+  "vim?:",
+);
+const JAVASCRIPT = directives(
+  "eslint-[a-z-]+",
+  String.raw`eslint\s+[@\w/-]+\s*:`,
+  String.raw`globals?\s+[A-Za-z_$][\w$]*(?:\s*:\s*\w+)?(?:\s*,\s*[A-Za-z_$][\w$]*(?:\s*:\s*\w+)?)*\s*$`,
+  "(?:oxlint|stylelint)-(?:disable|enable)[a-z-]*",
+  "tslint:(?:disable|enable)",
+  "jshint",
+  "@ts-(?:ignore|expect-error|nocheck|check)",
+  "biome-ignore(?:-all|-start|-end)?",
+  "deno-(?:lint|fmt)-ignore(?:-file)?",
+  String.raw`(?:istanbul|c8|v8)\s+ignore`,
+  String.raw`node:coverage\s+(?:ignore|disable|enable)`,
   "@vite-ignore",
-];
-const TOOL_PRAGMA = new RegExp(`^(?:${PRAGMA_GRAMMARS.join("|")})$`);
+  "(?:webpack|turbopack)[A-Z]\\w*\\s*:",
+  "[#@]__(?:PURE|NO_SIDE_EFFECTS|INLINE|KEY)__",
+  "@jsx(?:Frag|ImportSource|Runtime)?",
+  "<(?:reference|amd-module|amd-dependency)",
+  "@(?:no)?flow",
+  "\\$Flow(?:FixMe|Ignore|ExpectedError|Issue)",
+  "[#@]\\s*source(?:MappingURL|URL)=",
+  "@refresh",
+  "@deprecated",
+  "@(?:vitest|jest)-environment",
+  "#(?:end)?region",
+  "svelte-ignore",
+);
+const PYTHON = directives(
+  "(?:noqa|NOQA)",
+  "nosec",
+  "(?:type|pyright|mypy|pylint|pragma|fmt|isort|ruff|pytype|flake8|yapf|autopep8)\\s*:",
+  "pyre-(?:ignore|fixme|strict|unsafe)",
+);
+const RUST = directives("SAFETY:", "rustfmt::skip");
+const SHELL = directives("shellcheck");
+const directiveMatcher = (forms: string[]) => new RegExp(`^(?:${[...EVERY_LANGUAGE, ...forms].join("|")})`);
+const TOOL_DIRECTIVE = new Map<Dialect, RegExp>([
+  ["javascript", directiveMatcher(JAVASCRIPT)],
+  ["jsx", directiveMatcher(JAVASCRIPT)],
+  ["python", directiveMatcher(PYTHON)],
+  ["hash", directiveMatcher(PYTHON)],
+  ["rust", directiveMatcher(RUST)],
+  ["shell", directiveMatcher(SHELL)],
+]);
+const ONLY_SHARED_DIRECTIVES = directiveMatcher([]);
+const ENCODING_DECLARATION = /^.*?coding[:=]\s*[-\w.]+/;
+const LAST_ENCODING_LINE = 2;
+const DECLARES_ENCODING = new Set<Dialect>(["python", "hash"]);
 const STAR = 42;
 const LICENSE_LINE =
   /^(?:SPDX-License-Identifier:\s*[\w.+-]+(?:\s+(?:AND|OR|WITH)\s+[\w.+-]+)*|@license(?:\s+[\w.+-]+)?|Copyright\s+(?:\(c\)\s*|©\s*)?\d{4}\b.*)$/i;
@@ -46,6 +85,8 @@ const MAX_DECORATOR_LINES = 64;
 
 interface Source {
   text: string;
+  directive: RegExp;
+  declaresEncoding: boolean;
   lineStarts: number[];
   strippedLines: string[];
 }
@@ -124,7 +165,10 @@ function decoratorLines(strippedLines: string[]): number[] {
 function reportedLinesOf(source: Source, region: Region, licensed: Set<number>): number[] {
   const lines = linesOf(source, region).map((line) => ({ line, body: bodyOnLine(source, region, line) }));
   const exempt = ({ line, body }: { line: number; body: string }) =>
-    licensed.has(line) || (isShebang(source, line) && region.from === 0) || TOOL_PRAGMA.test(body);
+    licensed.has(line) ||
+    (isShebang(source, line) && region.from === 0) ||
+    source.directive.test(body) ||
+    (source.declaresEncoding && line <= LAST_ENCODING_LINE && ENCODING_DECLARATION.test(body));
   const withText = lines.filter(({ body }) => body !== "");
   const regionSaysSomething = withText.length === 0 || withText.some((entry) => !exempt(entry));
   return lines
@@ -138,7 +182,13 @@ export function commentFactsOf(text: string, dialect: Dialect): CommentFacts {
     if (kind === "comment") regions.push({ from, to });
   });
   if (!regions.length) return NO_COMMENTS;
-  const source: Source = { text, lineStarts: lineStartsOf(text), strippedLines: stripped.split("\n") };
+  const source: Source = {
+    text,
+    directive: TOOL_DIRECTIVE.get(dialect) ?? ONLY_SHARED_DIRECTIVES,
+    declaresEncoding: DECLARES_ENCODING.has(dialect),
+    lineStarts: lineStartsOf(text),
+    strippedLines: stripped.split("\n"),
+  };
   const licensed = leadingLicenseLines(source, regions);
   const reported = new Set<number>();
   const covered = new Set<number>();
