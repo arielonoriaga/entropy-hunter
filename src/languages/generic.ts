@@ -3,6 +3,7 @@ import {
   braceNesting, complexityFromMarkers, countMagic, indentNesting, findSharedConditionGroups, isTestFile, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
+import { nonExemptCommentLines, type CommentSyntax } from "./comments";
 
 // Language-agnostic fallback: churn, duplication, LOC and normalization are
 // exact; complexity and dependencies are approximate (regex heuristics over
@@ -26,6 +27,12 @@ const HASH_COMMENT_LANGS = new Set(["python", "ruby", "shell", "elixir", "gdscri
 // escape these patterns still get a <module> pseudo-function.
 const FN_HEADER =
   /\b(?:def|func|fn|function|sub|proc)\s+\(?[\w()[\] *]*?([A-Za-z_]\w*)\s*[({]/g;
+const FN_HEADER_BY_LANGUAGE = new Map([
+  ["shell", new RegExp(`${FN_HEADER.source}|^\\s*([A-Za-z_][\\w:-]*)\\s*\\(\\)\\s*(?:\\{|\\(|$)`, "g")],
+]);
+const COMMENT_SYNTAX_BY_LANGUAGE = new Map<string, CommentSyntax>([["shell", "shell"]]);
+const commentSyntaxOf = (language: string): CommentSyntax =>
+  COMMENT_SYNTAX_BY_LANGUAGE.get(language) ?? (HASH_COMMENT_LANGS.has(language) ? "hash" : "c");
 // Union of branch keywords; `and`/`or` only matter where they're operators —
 // elsewhere they can't appear as bare words outside stripped strings/comments.
 const DECISION =
@@ -49,7 +56,7 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     language,
     detect: (p) => langOf(p) === language,
     complexity(source) {
-      return complexityFromMarkers(strip(source, path), FN_HEADER, DECISION);
+      return complexityFromMarkers(strip(source, path), FN_HEADER_BY_LANGUAGE.get(language) ?? FN_HEADER, DECISION);
     },
     imports(source) {
       return [
@@ -116,6 +123,10 @@ export function genericAnalyzerFor(path: string): LanguageAnalyzer | null {
     },
     // Field-shape analysis needs typed syntax knowledge — dedicated plugins only.
     stateSpace: () => [],
+
+    commentLines(source) {
+      return nonExemptCommentLines(source, commentSyntaxOf(language));
+    },
 
     testCoverage(_source, from, fileSet) {
       if (isTestFile(from)) return { has_test: true, test_path: "" };

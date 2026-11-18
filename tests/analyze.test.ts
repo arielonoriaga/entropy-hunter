@@ -276,7 +276,7 @@ describe("analyzeRepo on fixtures", () => {
   });
 
   test("JSON schema shape (version 13)", () => {
-    expect(result.version).toBe(13);
+    expect(result.version).toBe(14);
     expect(result.repository).toHaveProperty("name");
     expect(result.repository).toHaveProperty("commit");
     expect(Array.isArray(result.architecture_violations)).toBe(true);

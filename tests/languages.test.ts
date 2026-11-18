@@ -459,3 +459,56 @@ describe("control-flow nesting", () => {
     expect(genericAnalyzerFor("a.rb")!.nesting("if a\n  if b\n  end\nend\n").depth).toBe(0);
   });
 });
+
+describe("function spans", () => {
+  const spans = (cx: { functions: { name: string; line: number; end_line: number }[] }) =>
+    cx.functions.map((f) => [f.name, f.line, f.end_line]);
+
+  test("a function ends at its own closing line, not at the next header", () => {
+    const src = [
+      "export function a(",
+      "  x: number,",
+      "): number {",
+      "  return x;",
+      "}",
+      "",
+      "/** doc of b */",
+      "export function b() {",
+      "  const inner = () => {",
+      "    return 1;",
+      "  };",
+      "  return inner();",
+      "}",
+      "export const after = 1;",
+    ].join("\n");
+    expect(spans(typescriptAnalyzer.complexity(src))).toEqual([["a", 1, 5], ["b", 8, 13], ["inner", 9, 11]]);
+  });
+
+  test("a single-line function spans its header only", () => {
+    expect(spans(typescriptAnalyzer.complexity("function f() { return 1; }\nconst x = 2;\n"))).toEqual([["f", 1, 1]]);
+  });
+
+  test("an indentation-scoped function ends where the indentation does", () => {
+    const python = genericAnalyzerFor("a.py")!;
+    expect(spans(python.complexity("def f(x):\n    return x\n\nVALUE = 1\n"))).toEqual([["f", 1, 2]]);
+  });
+
+  test("a Rust where-clause stays inside the signature", () => {
+    const src = "fn f<T>(x: T) -> T\nwhere\n    T: Clone,\n{\n    x\n}\n";
+    expect(spans(rustAnalyzer.complexity(src))).toEqual([["f", 1, 6]]);
+  });
+});
+
+describe("shell functions", () => {
+  const shell = genericAnalyzerFor("run.sh")!;
+
+  test("POSIX name() { and the function keyword both declare functions", () => {
+    const src = "foo() {\n  if true; then echo 1; fi\n}\n\nfunction bar {\n  echo 2\n}\nbaz () {\n  echo 3\n}\n";
+    const cx = shell.complexity(src);
+    expect(cx.functions.map((f) => [f.name, f.complexity])).toEqual([["foo", 2], ["bar", 1], ["baz", 1]]);
+  });
+
+  test("a call with arguments or a command substitution is not a declaration", () => {
+    expect(shell.complexity('foo "a" {b}\nx=$(date)\n').functions).toEqual([]);
+  });
+});

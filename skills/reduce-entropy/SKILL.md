@@ -97,6 +97,23 @@ it will move. If you cannot name the fact, you have not found the cause yet.
    remaining targets are legitimate signals, or two consecutive attempts
    produced < 1 point of improvement.
 
+## A comments finding
+
+The gate fails a function you touched while it still carries comments, and any
+new comment line. Comments go stale and mislead; the code has to say it.
+
+1st. **Find why each comment exists** — the constraint, the bug it guards
+     against, the non-obvious reason.
+2nd. **Encode that why in the code** — a name for the variable or function, an
+     extracted function whose name is the comment, a type that makes the bad
+     state unrepresentable, or a test whose name states the rule.
+3rd. **Delete the comment.**
+
+Never move a comment somewhere else (above the function, into the module
+header, into a string) to get past the gate — the rule counts those too, and
+the why is still not in the code. Only touch functions the change needed;
+never sweep comments out of untouched code.
+
 ## Accepting a regression
 
 Some regressions are the right call: a lookup table, a parser whose branching

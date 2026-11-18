@@ -169,3 +169,97 @@ describe("entropy check", () => {
     expect(() => check(null, null, "no-such-ref")).toThrow(GitError);
   });
 });
+
+const commentsOf = (result: CheckResult, path: string) =>
+  fileOf(result, path).findings.filter((f) => f.rule === "comments").map((f) => f.message);
+const TWO_FUNCTIONS = [
+  "export function a(x: number): number {",
+  "  // why a",
+  "  const y = x + 1;",
+  "  return y;",
+  "}",
+  "",
+  "export function b(x: number): number {",
+  "  // why b",
+  "  return x * 2;",
+  "}",
+  "",
+].join("\n");
+
+describe("entropy check: comments", () => {
+  beforeEach(() => {
+    repo.write("src/two.ts", TWO_FUNCTIONS);
+    repo.commit("two functions with comments");
+  });
+
+  test("touching a function fails on the comments it still carries, and leaves untouched ones alone", () => {
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("x + 1", "x + 2"));
+    const result = check();
+    expect(result.verdict).toBe("fail");
+    expect(commentsOf(result, "src/two.ts")).toEqual([
+      "function `a` (line 1) still carries 1 comment (line 2) — move the why into names/tests, then delete it",
+    ]);
+  });
+
+  test("a new comment outside any function fails on its own line only", () => {
+    const withModuleNote = "// existing note\n\n" + TWO_FUNCTIONS;
+    repo.write("src/two.ts", withModuleNote);
+    repo.commit("existing note");
+    repo.write("src/two.ts", withModuleNote + "// fresh\nexport const z = 1;\n");
+    expect(commentsOf(check(), "src/two.ts")).toEqual([
+      "new comment outside any function at line 13 — move the why into names/tests, then delete it",
+    ]);
+  });
+
+  test("deleting every comment of a touched function passes", () => {
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("  // why a\n", ""));
+    expect(commentsOf(check(), "src/two.ts")).toEqual([]);
+  });
+
+  test("deleting a statement inside a function touches it", () => {
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("  const y = x + 1;\n", "").replace("return y;", "return x;"));
+    expect(commentsOf(check(), "src/two.ts")).toHaveLength(1);
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("  return x * 2;\n", "  return 0;\n"));
+    expect(commentsOf(check(), "src/two.ts")[0]).toContain("`b`");
+  });
+
+  test("removing a whole function between two others touches neither neighbour", () => {
+    const three = TWO_FUNCTIONS + "\nexport function c(): number {\n  // why c\n  return 3;\n}\n";
+    repo.write("src/two.ts", three);
+    repo.commit("three");
+    repo.write("src/two.ts", three.replace(/export function b[^}]*}\n\n/, ""));
+    expect(commentsOf(check(), "src/two.ts")).toEqual([]);
+  });
+
+  test("a doc comment directly above a function belongs to that function", () => {
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("export function b", "/** b doc */\nexport function b"));
+    repo.commit("doc");
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("export function b", "/** b doc */\nexport function b").replace("x + 1", "x + 3"));
+    expect(commentsOf(check(), "src/two.ts")).toEqual([
+      "function `a` (line 1) still carries 1 comment (line 2) — move the why into names/tests, then delete it",
+    ]);
+  });
+
+  test("a brand-new file reports every function's comments and every loose one", () => {
+    repo.write("src/fresh.ts", "// top\n" + TWO_FUNCTIONS);
+    const messages = commentsOf(check(), "src/fresh.ts");
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toContain("`a` (line 2) still carries 2 comments (lines 1, 3)");
+    expect(messages[1]).toContain("`b` (line 8) still carries 1 comment (line 9)");
+  });
+
+  test("a renamed file is diffed against its old path", () => {
+    repo.git("mv", "src/two.ts", "src/moved.ts");
+    repo.write("src/moved.ts", TWO_FUNCTIONS.replace("x * 2", "x * 4"));
+    expect(commentsOf(check(), "src/moved.ts")).toEqual([
+      "function `b` (line 7) still carries 1 comment (line 8) — move the why into names/tests, then delete it",
+    ]);
+  });
+
+  test("[gate] comments = false turns the rule off", () => {
+    repo.write("src/two.ts", TWO_FUNCTIONS.replace("x + 1", "x + 2"));
+    const config = { ...DEFAULT_CONFIG, gate: { ...DEFAULT_CONFIG.gate, comments: false } };
+    const result = checkRepo(repo.path, config, { base: "HEAD", since: "30d", only: null, touchedSince: null }, null, null);
+    expect(commentsOf(result, "src/two.ts")).toEqual([]);
+  });
+});

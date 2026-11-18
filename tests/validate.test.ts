@@ -92,4 +92,9 @@ describe("loadConfig rejects malformed config.toml", () => {
     const repo = repoWithConfig("r6-", "[priority]\ncritical_threshold = 40\n");
     expect(loadConfig(repo).priority.critical_threshold).toBe(40);
   });
+
+  test("[gate] comments is a boolean switch", () => {
+    expect(loadConfig(repoWithConfig("r7-", "[gate]\ncomments = false\n")).gate.comments).toBe(false);
+    expect(() => loadConfig(repoWithConfig("r8-", "[gate]\ncomments = 3\n"))).toThrow(/comments must be a boolean/);
+  });
 });

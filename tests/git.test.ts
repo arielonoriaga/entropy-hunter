@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  changedSince, churn, churnLog, currentCommit, GitError, isGitRepo, readFilesAt, resolveBase,
+  changedSince, churn, churnLog, currentCommit, GitError, isGitRepo, parseZeroContextPatch, readFilesAt, resolveBase,
   sinceToDate, startOfUtcDay, summarizeChurn,
 } from "../src/git";
 import { tempRepo } from "./support";
@@ -195,5 +195,38 @@ describe("comparing against a base commit", () => {
     expect(resolveBase(r.path, "HEAD")).toBe(tip);
     expect(() => resolveBase(r.path, "no-such-ref")).toThrow(GitError);
     rmSync(r.path, { recursive: true, force: true });
+  });
+});
+
+describe("parseZeroContextPatch", () => {
+  test("added and modified lines come from the after side of each hunk", () => {
+    const patch = [
+      "diff --git a/f.ts b/f.ts",
+      "--- a/f.ts",
+      "+++ b/f.ts",
+      "@@ -2 +2 @@ fn",
+      "-old",
+      "+new",
+      "@@ -5,0 +6,2 @@",
+      "+++ looks like a header",
+      "+@@ -1 +1 @@ looks like a hunk",
+      "@@ -9,2 +10,0 @@",
+      "-gone",
+      "-gone too",
+      "\\ No newline at end of file",
+    ].join("\n");
+    const changes = parseZeroContextPatch(patch);
+    expect(changes.kind).toBe("diff");
+    if (changes.kind !== "diff") return;
+    expect([...changes.added]).toEqual([2, 6, 7]);
+    expect([...changes.removedAfter]).toEqual([10]);
+  });
+
+  test("blank lines added or removed touch nothing", () => {
+    const patch = ["@@ -3,0 +4,2 @@", "+", "+   ", "@@ -8 +9,0 @@", "-", "@@ -12,0 +12 @@", "+x"].join("\n");
+    const changes = parseZeroContextPatch(patch);
+    if (changes.kind !== "diff") throw new Error("expected a diff");
+    expect([...changes.added]).toEqual([12]);
+    expect([...changes.removedAfter]).toEqual([]);
   });
 });

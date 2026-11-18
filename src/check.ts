@@ -7,7 +7,8 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { analyzeTree, loadChurn, type ProgressFn } from "./analyze";
-import { changedSince, resolveBase } from "./git";
+import { commentFindings } from "./comment-gate";
+import { changedLines, changedSince, resolveBase, type LineChanges } from "./git";
 import { analyzerFor } from "./languages";
 import type { Storage } from "./storage";
 import { treeAt, workingTree } from "./tree";
@@ -66,6 +67,7 @@ interface Sides {
   after: FileMetrics;
   after_by_path: Map<string, FileMetrics>;
   config: EntropyConfig;
+  changes: LineChanges | null;
 }
 type Rule = (sides: Sides) => Finding[];
 
@@ -155,6 +157,11 @@ const RULES: Rule[] = [
     return [warn("untested", `complexity ${after.complexity_total} with no test covering it`)];
   },
 
+  function comments({ after, changes }) {
+    if (!changes) return [];
+    return commentFindings(after.functions, after.comment_lines, changes).map((message) => fail("comments", message));
+  },
+
   function orphan({ before, after }) {
     if (before || !after.is_orphan) return [];
     return [warn("orphan", "new file that nothing imports (and is not a recognized entrypoint)")];
@@ -223,6 +230,9 @@ export interface CheckOptions {
   touchedSince: number | null;
 }
 
+const commentGateApplies = (config: EntropyConfig, after: FileMetrics) =>
+  config.gate.comments && after.comment_lines.length > 0;
+
 export function checkRepo(
   repo: string,
   config: EntropyConfig,
@@ -247,14 +257,13 @@ export function checkRepo(
     summary: { files_changed: 0, failed: 0, warned: 0, waived: 0, entropy_before: 0, entropy_after: 0 },
     files: [],
   };
-  if (!candidates.length) return result; // nothing analyzable changed: no analysis needed
+  if (!candidates.length) return result;
 
-  // Same churn on both sides: history is not something this change did.
-  const churn = loadChurn(repo, options.since, storage, progress);
+  const churnSharedByBothSides = loadChurn(repo, options.since, storage, progress);
   const tree = workingTree(repo);
-  const head = analyzeTree(repo, tree, config, churn, { storage, memo: null, progress });
+  const head = analyzeTree(repo, tree, config, churnSharedByBothSides, { storage, memo: null, progress });
   progress?.("analyzing base…");
-  const base = analyzeTree(repo, treeAt(repo, commit, diff), config, churn, {
+  const base = analyzeTree(repo, treeAt(repo, commit, diff), config, churnSharedByBothSides, {
     storage: null, memo: head.memo, progress: null,
   });
 
@@ -262,9 +271,10 @@ export function checkRepo(
   const before_by_path = new Map(base.result.files.map((f) => [f.path, f]));
   for (const change of candidates) {
     const after = after_by_path.get(change.path);
-    if (!after) continue; // skipped (unreadable) or excluded directory
+    if (!after) continue;
     const before = change.base_path ? before_by_path.get(change.base_path) ?? null : null;
-    const findings = RULES.flatMap((rule) => rule({ before, after, after_by_path, config }));
+    const changes = commentGateApplies(config, after) ? changedLines(repo, commit, change) : null;
+    const findings = RULES.flatMap((rule) => rule({ before, after, after_by_path, config, changes }));
     const failed = findings.some((f) => f.level === "fail");
     const waiver = failed ? waiverFor(storage, change.path, tree.read(change.path)) : null;
     result.files.push({

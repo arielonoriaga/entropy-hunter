@@ -73,11 +73,12 @@ interface CachedBase {
   mg: { numbers: number; strings: number };
   gd: { groups: number; max: number; prefix: string };
   nest: Nesting;
+  comments: number[];
 }
 
 // Bump when CachedBase shape or any metric computation changes, so stale
 // cache rows recompute instead of deserializing into missing fields.
-const CACHE_VERSION = "v15"; // v15: control-flow nesting depth
+const CACHE_VERSION = "v16";
 
 export type ProgressFn = (message: string) => void;
 
@@ -115,6 +116,7 @@ function measure(analyzer: LanguageAnalyzer, src: string): CachedBase {
     mg: analyzer.magic(src),
     gd: { groups: guards.length, max: worstGuard.count, prefix: worstGuard.prefix },
     nest: analyzer.nesting(src),
+    comments: analyzer.commentLines(src),
   };
 }
 
@@ -196,7 +198,6 @@ interface Measured {
   memo: BaseMemo;
 }
 
-// Pass 1: per-file facts — measured once per content, cached after.
 function measureFiles(
   tree: SourceTree,
   churnMap: Map<string, FileChurn>,
@@ -220,7 +221,7 @@ function measureFiles(
     }
     const src = tree.read(path);
     if (src === null) {
-      files_skipped.push(path); // unreadable: deleted mid-run, permissions, non-UTF8
+      files_skipped.push(path);
       continue;
     }
     const analyzer = analyzerFor(path)!;
@@ -238,7 +239,6 @@ function measureFiles(
       if (storage) cacheWrites.push(toCacheRow(path, contentHash, base));
     }
     memo.set(path, { content_hash: contentHash, base });
-    // Both depend on which files exist, so neither is cached; both are cheap.
     const deps = analyzer.resolve(base.imports, path, fileSet, aliases);
     const tc = analyzer.testCoverage(src, path, fileSet);
 
@@ -296,6 +296,7 @@ function measureFiles(
       in_cycle: false,
       transitive_dependents: 0,
       arch_violations: 0,
+      comment_lines: base.comments,
     });
   }
 
@@ -474,8 +475,6 @@ function scoreFile(f: FileFacts, { config, totalFiles, totalLoc, blend }: Scorin
   };
 }
 
-// The engine proper: scores one tree. It reads files only through `tree`, so
-// the same code measures the working tree and any past commit.
 export function analyzeTree(
   repo: string,
   tree: SourceTree,
@@ -489,7 +488,6 @@ export function analyzeTree(
   const architecture_violations = linkGraph(facts, config);
 
   ctx.progress?.("detecting duplication…");
-  // Pass 3: duplication across the whole repo
   for (const [path, dup] of detectDuplication(dupInput)) {
     const f = facts.get(path)!;
     f.duplicated_lines = dup.duplicated_lines;
@@ -530,7 +528,7 @@ export function analyzeTree(
     .slice(0, hw.limit);
 
   const result: AnalysisResult = {
-    version: 13,
+    version: 14,
     repository: { name: repoName(repo), commit: currentCommit(repo), path: repo },
     timestamp: new Date().toISOString(),
     files_analyzed: files.length,

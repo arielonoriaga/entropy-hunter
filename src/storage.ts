@@ -198,23 +198,19 @@ export class Storage {
       RETURNING id
     `);
     const { summary: s } = result;
-    // Persist the full report minus per-function detail (keeps DB small; a
-    // future agent gets functions from a fresh `entropy file` call).
-    const slim = {
+    const withoutPerLineDetail = {
       ...result,
-      files: result.files.map(({ functions, dependencies, dependents, ...rest }) => rest),
+      files: result.files.map(({ functions, dependencies, dependents, comment_lines, ...rest }) => rest),
       hotspots: result.hotspots.map((h) => h.path),
     };
     const row = insert.get(
       result.repository.name, result.repository.commit, result.timestamp,
       s.entropy, s.complexity, s.coupling, s.churn, s.duplication, s.state,
       s.clumping, s.deadcode, s.architecture, s.reach, s.magic, s.guard, s.test,
-      s.semantic, s.nesting, result.files_analyzed, JSON.stringify(slim),
+      s.semantic, s.nesting, result.files_analyzed, JSON.stringify(withoutPerLineDetail),
     ) as { id: number };
 
-    // Named columns: migrated DBs append new columns at the end, so
-    // positional inserts would misalign between fresh and migrated schemas.
-    const fm = this.db.query(`
+    const insertFileMetricsByColumnName = this.db.query(`
       INSERT INTO file_metrics (snapshot_id, path, language, loc,
         complexity_total, complexity_average, complexity_max, fan_in, fan_out,
         dependency_count, dependent_count, commits, lines_added, lines_deleted,
@@ -233,7 +229,7 @@ export class Storage {
     `);
     const tx = this.db.transaction((files: FileMetrics[]) => {
       for (const f of files) {
-        fm.run(
+        insertFileMetricsByColumnName.run(
           row.id, f.path, f.language, f.loc, f.complexity_total,
           f.complexity_average, f.complexity_max, f.fan_in, f.fan_out,
           f.dependency_count, f.dependent_count, f.commits, f.lines_added,

@@ -6,6 +6,7 @@ export interface FunctionComplexity {
   name: string;
   complexity: number;
   line: number;
+  end_line: number;
 }
 
 export interface FileFacts {
@@ -74,6 +75,7 @@ export interface FileFacts {
   in_cycle: boolean; // part of a dependency cycle (a strongly connected group of 2+ files)
   transitive_dependents: number; // files that can break when this one changes
   arch_violations: number; // imports that point inner→outer against [architecture] layers
+  comment_lines: number[];
 }
 
 // The signals blended into the Entropy Index, in scoring order. Each has a
@@ -158,7 +160,7 @@ export interface AnalysisResult {
   // v7: guard (shared-condition) signal; v8: test-coverage-presence signal;
   // v9: entropy_score/priority_score per file, p95_file_entropy/critical_hotspots summary;
   // v10: semantic (nested-optionality) signal; v11/v12: analyzer refinements
-  version: 13;
+  version: 14;
   repository: { name: string; commit: string; path: string };
   timestamp: string;
   files_analyzed: number;
@@ -213,6 +215,7 @@ export interface EntropyConfig {
     function_complexity: number; // a function may not grow past this complexity
     new_duplicated_lines: number; // newly duplicated lines that fail
     nesting_depth: number; // control-flow nesting may not grow past this depth
+    comments: boolean;
   };
   // Normalization caps: raw value that maps to score 100 (linear, clamped).
   // Engineering heuristics, not universal constants — tune per codebase.
@@ -267,6 +270,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     function_complexity: 15,
     new_duplicated_lines: 6,
     nesting_depth: 4,
+    comments: true,
   },
   scoring: {
     complexity_avg_cap: 10,

@@ -104,11 +104,18 @@ function stringEnd(src: string, open: number, quote: number): number {
   return j;
 }
 
+export type CommentListener = (from: number, to: number) => void;
+
+function notifyIfComment(onComment: CommentListener | undefined, opener: number, from: number, to: number): void {
+  if (onComment && to !== -1 && opener !== LOWER_R) onComment(from, to);
+}
+
 export function stripCommentsAndStrings(
   src: string,
   opts: {
     singleQuotes?: boolean; hashComments?: boolean; keepStrings?: boolean; regexLiterals?: boolean;
   } = {},
+  onComment?: CommentListener,
 ): string {
   const singleQuotes = opts.singleQuotes ?? true;
   const hashComments = opts.hashComments ?? false;
@@ -116,22 +123,19 @@ export function stripCommentsAndStrings(
   const regexLiterals = opts.regexLiterals ?? false;
   const n = src.length;
   const out: string[] = [];
-  let kept = 0; // start of the verbatim run not yet copied to `out`
+  let copiedUpTo = 0;
   let i = 0;
-  // No closure over `i`/`kept` in here: a helper capturing the loop
-  // variables costs ~10x on this, the hottest loop of a cold run.
   while (i < n) {
     const c = src.charCodeAt(i);
     if (c >= OPENS_REGION.length || !OPENS_REGION[c]) {
       i++;
       continue;
     }
-    // [from, to) is what gets blanked; scanning continues at `resume`.
-    let from = i;
-    let to = wholeRegionEnd(src, i, c, hashComments);
-    let resume = to;
-    if (to === -1) {
-      // A string or regex literal: its delimiters stay, only the body goes.
+    let blankFrom = i;
+    let blankTo = wholeRegionEnd(src, i, c, hashComments);
+    notifyIfComment(onComment, c, i, blankTo);
+    let resumeAt = blankTo;
+    if (blankTo === -1) {
       const isRegex = c === SLASH;
       const opens = isRegex ? regexLiterals && startsRegex(src, i) : c !== LOWER_R && c !== HASH && (c !== SINGLE || singleQuotes);
       const close = !opens ? -1 : isRegex ? regexEnd(src, i) : stringEnd(src, i, c);
@@ -139,20 +143,20 @@ export function stripCommentsAndStrings(
         i++;
         continue;
       }
-      from = i + 1;
-      to = close;
-      resume = Math.min(close + 1, n);
-      if (to === from || (keepStrings && !isRegex)) {
-        i = resume;
+      blankFrom = i + 1;
+      blankTo = close;
+      resumeAt = Math.min(close + 1, n);
+      if (blankTo === blankFrom || (keepStrings && !isRegex)) {
+        i = resumeAt;
         continue;
       }
     }
-    if (from > kept) out.push(src.slice(kept, from));
-    out.push(isShortSingleLine(src, from, to) ? SPACES.slice(0, to - from) : blank(src.slice(from, to)));
-    kept = to;
-    i = resume;
+    if (blankFrom > copiedUpTo) out.push(src.slice(copiedUpTo, blankFrom));
+    out.push(isShortSingleLine(src, blankFrom, blankTo) ? SPACES.slice(0, blankTo - blankFrom) : blank(src.slice(blankFrom, blankTo)));
+    copiedUpTo = blankTo;
+    i = resumeAt;
   }
-  if (kept < n) out.push(src.slice(kept));
+  if (copiedUpTo < n) out.push(src.slice(copiedUpTo));
   return out.join("");
 }
 

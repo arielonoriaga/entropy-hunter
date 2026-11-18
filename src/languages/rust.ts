@@ -4,6 +4,7 @@ import {
   findSharedConditionGroups, isTestFile, largestPrefixClump, normalizedLinesFrom,
 } from "./analyzer";
 import { stripCommentsAndStrings } from "./strip";
+import { nonExemptCommentLines } from "./comments";
 
 const FN_HEADER = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/g;
 // Cyclomatic proxy: branch keywords + boolean operators + match arms (=>).
@@ -144,6 +145,8 @@ export const rustAnalyzer: LanguageAnalyzer = {
   nesting(source) {
     return braceNesting(stripped(source));
   },
+
+  commentLines: (source) => nonExemptCommentLines(source, "rust"),
 
   testCoverage(source, path) {
     if (isTestFile(path)) return { has_test: true, test_path: "" };

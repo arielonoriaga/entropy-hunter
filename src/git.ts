@@ -316,6 +316,46 @@ export function changedSince(repo: string, base: string): { changed: ChangedFile
   return { changed, deleted };
 }
 
+export type LineChanges =
+  | { kind: "new-file" }
+  | { kind: "diff"; added: Set<number>; removedAfter: Set<number> };
+
+const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+const hunkCount = (raw: string | undefined) => (raw === undefined ? 1 : Number(raw));
+const isBlankChange = (patchLine: string) => !patchLine.slice(1).trim();
+
+export function parseZeroContextPatch(patch: string): LineChanges {
+  const added = new Set<number>();
+  const removedAfter = new Set<number>();
+  const lines = patch.split("\n");
+  let ln = 0;
+  while (ln < lines.length) {
+    const hunk = HUNK_HEADER.exec(lines[ln++]);
+    if (!hunk) continue;
+    let afterLine = Number(hunk[2]);
+    let removesCode = false;
+    let bodyLines = hunkCount(hunk[1]) + hunkCount(hunk[3]);
+    for (; bodyLines > 0 && ln < lines.length; ln++) {
+      const body = lines[ln];
+      if (body.startsWith("\\")) continue;
+      bodyLines--;
+      if (body.startsWith("+") && !isBlankChange(body)) added.add(afterLine);
+      if (body.startsWith("+")) afterLine++;
+      if (body.startsWith("-") && !isBlankChange(body)) removesCode = true;
+    }
+    if (removesCode && hunkCount(hunk[3]) === 0) removedAfter.add(Number(hunk[2]));
+  }
+  return { kind: "diff", added, removedAfter };
+}
+
+export function changedLines(repo: string, base: string, change: ChangedFile): LineChanges {
+  if (change.base_path === null) return { kind: "new-file" };
+  const pathspecs = [...new Set([change.base_path, change.path])].map((p) => `:(literal)${p}`);
+  return parseZeroContextPatch(
+    git(repo, ["diff", "-U0", "-M", "--no-color", "--no-ext-diff", base, "--", ...pathspecs]),
+  );
+}
+
 export function listFilesAt(repo: string, commit: string): string[] {
   return git(repo, ["ls-tree", "-r", "--name-only", "-z", commit]).split("\0").filter(Boolean);
 }

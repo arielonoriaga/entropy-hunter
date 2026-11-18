@@ -9,6 +9,7 @@ const TEST_SUFFIXES = [
   ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx",
 ];
 import { stripCommentsAndStrings } from "./strip";
+import { nonExemptCommentLines } from "./comments";
 
 const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
@@ -141,6 +142,8 @@ export const typescriptAnalyzer: LanguageAnalyzer = {
   nesting(source) {
     return braceNesting(stripped(source));
   },
+
+  commentLines: (source) => nonExemptCommentLines(source, "javascript"),
 
   testCoverage(_source, path, fileSet) {
     if (isTestFile(path)) return { has_test: true, test_path: "" };

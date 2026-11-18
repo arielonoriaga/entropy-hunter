@@ -321,6 +321,7 @@ export interface LanguageAnalyzer {
   sharedConditions(source: string): ConditionGroup[];
   // Deepest control-flow nesting — see braceNesting / indentNesting.
   nesting(source: string): Nesting;
+  commentLines(source: string): number[];
   // Does this file have a corresponding test (companion file or, for Rust,
   // an inline #[cfg(test)] module)? fileSet enables companion-file lookup.
   testCoverage(source: string, path: string, fileSet: Set<string>): TestCoverage;
@@ -379,57 +380,64 @@ export function extractBraceBlocks(
   return blocks;
 }
 
-// Shared helper: attribute decision tokens to the enclosing function.
-// Heuristic, not AST-exact: each function starts at complexity 1; decision
-// tokens found after a function header (until the next header) belong to it.
+const CONTINUES_SIGNATURE = /^\s*(?:[)\]>{=:,.|&]|where\b|->)/;
+const CLOSES_BLOCK = /^\s*(?:\}|end\b)/;
+const indentOf = (line: string) => line.length - line.trimStart().length;
+
+function spanEndLine(lines: string[], header: number): number {
+  const headerIndent = indentOf(lines[header]);
+  let lastInside = header;
+  for (let ln = header + 1; ln < lines.length; ln++) {
+    if (!lines[ln].trim()) continue;
+    const indent = indentOf(lines[ln]);
+    if (indent > headerIndent || CONTINUES_SIGNATURE.test(lines[ln])) {
+      lastInside = ln;
+      continue;
+    }
+    const closesThisFunction = indent === headerIndent && CLOSES_BLOCK.test(lines[ln]);
+    return (closesThisFunction ? ln : lastInside) + 1;
+  }
+  return lastInside + 1;
+}
+
+function opensBlockBody(header: RegExpExecArray, line: string): boolean {
+  const isArrowWithExpressionBody = /=>\s*$/.test(header[0]);
+  return !isArrowWithExpressionBody || /^\s*\{/.test(line.slice(header.index + header[0].length));
+}
+
 export function complexityFromMarkers(
   stripped: string,
   functionHeader: RegExp,
   decisionToken: RegExp,
 ): ComplexityResult {
   const functions: FunctionComplexity[] = [];
-  // Parallel to `functions`: does this header's own line open a block body
-  // (ends with `{`)? A single-expression arrow (`const f = x => x + 1`) has
-  // none — it must not "capture" attribution for the lines that follow it,
-  // or a trivial one-line helper declared mid-function silently steals every
-  // decision point in the code that comes after it until the next header.
   const hasBody: boolean[] = [];
   const lines = stripped.split("\n");
   for (let ln = 0; ln < lines.length; ln++) {
     functionHeader.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = functionHeader.exec(lines[ln])) !== null) {
-      // Multi-alternative regexes put the name in whichever group matched.
-      const name = m.slice(1).find((g) => g !== undefined) ?? "<anonymous>";
-      functions.push({ name, complexity: 1, line: ln + 1 });
-      // A `function` declaration/expression or a same-line method header is
-      // always block-bodied by JS/TS grammar even when its own signature
-      // spans multiple lines (checking only THIS line for a trailing `{`
-      // would wrongly call it bodyless). Only a bare arrow assignment
-      // (header text ending in `=>`) can have an expression body instead —
-      // for those, body-ness is whatever immediately follows on this line.
-      const isArrow = /=>\s*$/.test(m[0]);
-      const restOfLine = lines[ln].slice(m.index! + m[0].length);
-      hasBody.push(!isArrow || /^\s*\{/.test(restOfLine));
+      const nameFromWhicheverAlternativeMatched = m.slice(1).find((g) => g !== undefined) ?? "<anonymous>";
+      functions.push({ name: nameFromWhicheverAlternativeMatched, complexity: 1, line: ln + 1, end_line: spanEndLine(lines, ln) });
+      hasBody.push(opensBlockBody(m, lines[ln]));
     }
   }
-  let fi = -1; // most recent header passed, whether or not it owns a body
-  let active = -1; // the block-bodied function currently attributing lines
-  let unattributed = 0;
+  let lastHeaderPassed = -1;
+  let attributingFunction = -1;
+  let moduleLevelDecisions = 0;
   for (let ln = 0; ln < lines.length; ln++) {
-    while (fi + 1 < functions.length && functions[fi + 1].line === ln + 1) {
-      fi++;
-      if (hasBody[fi]) active = fi;
+    while (lastHeaderPassed + 1 < functions.length && functions[lastHeaderPassed + 1].line === ln + 1) {
+      lastHeaderPassed++;
+      if (hasBody[lastHeaderPassed]) attributingFunction = lastHeaderPassed;
     }
-    const onHeaderLine = fi >= 0 && functions[fi].line === ln + 1;
-    const target = onHeaderLine && !hasBody[fi] ? fi : active;
+    const onBodylessHeaderLine = lastHeaderPassed >= 0 && functions[lastHeaderPassed].line === ln + 1 && !hasBody[lastHeaderPassed];
+    const target = onBodylessHeaderLine ? lastHeaderPassed : attributingFunction;
     const count = lines[ln].match(decisionToken)?.length ?? 0;
-    if (target < 0) unattributed += count;
+    if (target < 0) moduleLevelDecisions += count;
     else functions[target].complexity += count;
   }
-  // Decision points outside any function (top-level module code).
-  if (unattributed > 0) {
-    functions.unshift({ name: "<module>", complexity: 1 + unattributed, line: 0 });
+  if (moduleLevelDecisions > 0) {
+    functions.unshift({ name: "<module>", complexity: 1 + moduleLevelDecisions, line: 0, end_line: 0 });
   }
   const total = functions.reduce((s, f) => s + f.complexity, 0);
   return {
