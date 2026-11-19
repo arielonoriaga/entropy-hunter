@@ -221,6 +221,7 @@ export interface EntropyConfig {
     new_duplicated_lines: number; // newly duplicated lines that fail
     nesting_depth: number; // control-flow nesting may not grow past this depth
     comments: boolean;
+    literals: boolean;
   };
   // Normalization caps: raw value that maps to score 100 (linear, clamped).
   // Engineering heuristics, not universal constants — tune per codebase.
@@ -276,6 +277,7 @@ export const DEFAULT_CONFIG: EntropyConfig = {
     new_duplicated_lines: 6,
     nesting_depth: 4,
     comments: true,
+    literals: true,
   },
   scoring: {
     complexity_avg_cap: 10,

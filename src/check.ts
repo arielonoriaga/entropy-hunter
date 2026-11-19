@@ -8,6 +8,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import { analyzeTree, loadChurn, type ProgressFn } from "./analyze";
 import { commentFindings } from "./comment-gate";
+import { dialectOf, literalFindings } from "./literal-gate";
 import { changedLinesSince, changedSince, resolveBase, type ChangedFile, type LineChanges } from "./git";
 import { analyzerFor } from "./languages";
 import type { CommentFacts } from "./languages/comments";
@@ -69,6 +70,12 @@ interface Sides {
   after_by_path: Map<string, FileMetrics>;
   config: EntropyConfig;
   comment_scope: CommentScope | null;
+  literal_scope: LiteralScope | null;
+}
+
+interface LiteralScope {
+  changes: LineChanges;
+  source: string;
 }
 
 interface CommentScope {
@@ -169,6 +176,11 @@ const RULES: Rule[] = [
     return commentFindings(after.functions, comment_scope.facts, comment_scope.changes, comment_scope.source).map((message) => fail("comments", message));
   },
 
+  function literals({ after, literal_scope }) {
+    if (!literal_scope) return [];
+    return literalFindings(after.path, literal_scope.source, literal_scope.changes).map((message) => fail("literals", message));
+  },
+
   function orphan({ before, after }) {
     if (before || !after.is_orphan) return [];
     return [warn("orphan", "new file that nothing imports (and is not a recognized entrypoint)")];
@@ -248,6 +260,16 @@ function commentScopes(repo: string, base: string, tree: SourceTree, files: Chan
   return new Map([...facts].map(([path, { found, source }]) => [path, { facts: found, changes: changes.get(path)!, source }]));
 }
 
+function literalScopes(repo: string, base: string, tree: SourceTree, files: ChangedFile[]): Map<string, LiteralScope> {
+  const sources = new Map<string, string>();
+  for (const change of files) {
+    const source = dialectOf(change.path) ? tree.read(change.path) : null;
+    if (source !== null) sources.set(change.path, source);
+  }
+  const changes = changedLinesSince(repo, base, files.filter((change) => sources.has(change.path)));
+  return new Map([...sources].map(([path, source]) => [path, { changes: changes.get(path)!, source }]));
+}
+
 export function checkRepo(
   repo: string,
   config: EntropyConfig,
@@ -285,12 +307,14 @@ export function checkRepo(
   const after_by_path = new Map(head.result.files.map((f) => [f.path, f]));
   const before_by_path = new Map(base.result.files.map((f) => [f.path, f]));
   const comment_scopes = config.gate.comments ? commentScopes(repo, commit, tree, candidates) : new Map<string, CommentScope>();
+  const literal_scopes = config.gate.literals ? literalScopes(repo, commit, tree, candidates) : new Map<string, LiteralScope>();
   for (const change of candidates) {
     const after = after_by_path.get(change.path);
     if (!after) continue;
     const before = change.base_path ? before_by_path.get(change.base_path) ?? null : null;
     const comment_scope = comment_scopes.get(change.path) ?? null;
-    const findings = RULES.flatMap((rule) => rule({ before, after, after_by_path, config, comment_scope }));
+    const literal_scope = literal_scopes.get(change.path) ?? null;
+    const findings = RULES.flatMap((rule) => rule({ before, after, after_by_path, config, comment_scope, literal_scope }));
     const failed = findings.some((f) => f.level === "fail");
     const waiver = failed ? waiverFor(storage, change.path, tree.read(change.path)) : null;
     result.files.push({
