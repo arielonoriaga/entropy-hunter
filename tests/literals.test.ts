@@ -81,6 +81,11 @@ describe("literalFindings: string comparisons", () => {
     expect(literalFindings("src/a.rs", src, NEW).map((f) => f.split(":")[0])).toEqual(["line 1"]);
   });
 
+  test("a typeof check compares against the language's own type tags, not a domain value", () => {
+    const src = 'if (typeof window.matchMedia === "function") go();\nif (typeof ResizeObserver !== "function") return;\n';
+    expect(literalFindings("src/a.ts", src, NEW)).toEqual([]);
+  });
+
   test("comparing against an enum member passes", () => {
     expect(literalFindings("src/a.ts", "if (e.pointerType !== PointerKind.Mouse) return;\n", NEW)).toEqual([]);
   });

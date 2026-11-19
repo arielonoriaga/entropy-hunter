@@ -45,6 +45,7 @@ const RULES: LiteralRule[] = [
     kind: LiteralKind.StringComparison,
     dialects: RUST_AND_JS,
     pattern: /(?:===?|!==?)\s*["'`]([^"'`\n]+)["'`]|["'`]([^"'`\n]+)["'`]\s*(?:===?|!==?)|\bcase\s+["'`]([^"'`\n]+)["'`]\s*:/g,
+    allowedOn: /\btypeof\b/,
   },
 ];
 
