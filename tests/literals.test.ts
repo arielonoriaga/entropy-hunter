@@ -198,3 +198,90 @@ describe("literal context through the CLI", () => {
     }
   });
 });
+
+describe("literalFindings: JavaScript expression boundaries", () => {
+  test.each([
+    'typeof (value) === "string"',
+    'typeof row[key] === "undefined"',
+    'typeof getValue() === "object"',
+    '"string" === typeof (value)',
+    '"undefined" !== typeof row[key]',
+    '("object") == (typeof getValue())',
+    'typeof (getValue()) === ("function")',
+    'typeof row?.[key] === "undefined"',
+  ])("exempts genuine typeof operands: %s", expression => {
+    expect(literalFindings("a.ts", "if (" + expression + ") go();", NEW)).toEqual([]);
+  });
+
+  test.each([
+    ['key === `prefix-${id}`', []],
+    ['key === ""', []],
+    ['`prefix-${id}` !== key', []],
+    ['key === `combo`', ["combo"]],
+    ['key === (`combo`)', ["combo"]],
+    ['kind === ("combo")', ["combo"]],
+    ['(("combo")) === kind', ["combo"]],
+    ['kind === ("combo" as const)', ["combo"]],
+    ['key === `prefix-${kind === "combo"}`', ["combo"]],
+    ['kind === `prefix-\\${id}`', ["prefix-${id}"]],
+    ['typeof getValue() === "object" && kind === ("combo")', ["combo"]],
+    ['typeof (value === "combo") === "boolean"', ["combo"]],
+    ['typeof value + other === "string"', ["string"]],
+  ])("distinguishes literal values from computed expressions: %s", (expression, values) => {
+    const findings = literalFindings("a.ts", "if (" + expression + ") go();", NEW);
+    expect(findings).toHaveLength(values.length);
+    values.forEach(value => expect(findings.join("\n")).toContain('"' + value + '"'));
+  });
+
+  test.each([
+    ['const message = `result: ${kind === "combo"}`;', 1],
+    ['const message = `result: ${`nested: ${kind === ("combo")}`}`;', 1],
+    ['const message = `escaped \\` tick ${kind === "combo"}`;', 1],
+    ['const message = `result: ${(() => { const r = /[}]/; return kind === "combo"; })()}`;', 1],
+    ['const message = `result: ${\n kind === "combo"\n}`;', 2],
+  ])("visits executable template interpolations: %s", (source, line) => {
+    expect(literalFindings("a.ts", source, NEW)).toEqual([expect.stringContaining('line ' + line + ': string comparison with "combo"')]);
+    expect(literalFindings("a.ts", source, onLines(line))).toHaveLength(1);
+    expect(literalFindings("a.ts", source, onLines(line + 1))).toEqual([]);
+  });
+
+  test.each([
+    'const message = `kind === "combo"`;',
+    'const message = `escaped \\${kind === "combo"}`;',
+    'const pattern = /kind === "combo"/;',
+    'const example = "if (key === \'combo\') go();";',
+  ])("leaves documentation, escaped interpolation, and regex contents alone: %s", source => {
+    expect(literalFindings("a.ts", source, NEW)).toEqual([]);
+  });
+
+  test("checks JSX expression containers", () => {
+    expect(literalFindings("a.tsx", 'const view = <span>{`result: ${kind === "combo"}`}</span>;', NEW))
+      .toEqual([expect.stringContaining('string comparison with "combo"')]);
+  });
+});
+
+describe("literalFindings: AST source positions", () => {
+  test("decodes escaped comparison text without changing physical source lines", () => {
+    const source = 'const marker = 1;\nif (kind === "\\x63ombo") go();\n';
+    expect(literalFindings("a.ts", source, onLines(2)))
+      .toEqual([expect.stringContaining('line 2: string comparison with "combo"')]);
+    expect(literalFindings("a.ts", source, onLines(1))).toEqual([]);
+  });
+
+  test("retains SQL context across interpolation and excludes its executable source", () => {
+    const source = 'const q = sql`SELECT * FROM ${table} WHERE\n kind = \'combo\' AND note = ${"kind = \'ignored\'"}\n AND status IN (${param}, \'completed\')`;';
+    expect(literalFindings("a.ts", source, NEW)).toEqual([
+      expect.stringContaining('line 2: SQL discriminant "combo"'),
+      expect.stringContaining('line 3: SQL discriminant "completed"'),
+    ]);
+    expect(literalFindings("a.ts", source, onLines(2))).toHaveLength(1);
+    expect(literalFindings("a.ts", source, onLines(3))).toHaveLength(1);
+    expect(literalFindings("a.ts", source, onLines(1))).toEqual([]);
+  });
+
+  test("checks escaped SQL delimiters at the original source line", () => {
+    const source = "const q = 'SELECT * FROM products WHERE kind = \\'combo\\'';\n";
+    expect(literalFindings("a.ts", source, NEW))
+      .toEqual([expect.stringContaining('line 1: SQL discriminant "combo"')]);
+  });
+});
