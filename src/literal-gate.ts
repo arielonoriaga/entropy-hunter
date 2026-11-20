@@ -80,10 +80,10 @@ function sqlHits(literal: LiteralText): LiteralHit[] {
       hits.push({ kind: LiteralKind.SqlDiscriminant, value: match[1], offset: offset + at });
     }
   };
-  collect(literal.value, literal.from, /(?:=|<>|!=)\s*\\?'([a-z][a-z0-9_]+)\\?'/g);
+  collect(literal.value, literal.from, /(?:=|<>|!=)\s*\\?'([a-z][a-z0-9_]*)\\?'/g);
   for (const list of literal.value.matchAll(/\b(?:VALUES|IN)\s*\(([^)]*)\)/gi)) {
     const offset = literal.from + list.index + list[0].indexOf("(") + 1;
-    collect(list[1], offset, /\\?'([a-z][a-z0-9_]+)\\?'/g);
+    collect(list[1], offset, /\\?'([a-z][a-z0-9_]*)\\?'/g);
   }
   return hits;
 }

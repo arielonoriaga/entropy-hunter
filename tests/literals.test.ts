@@ -6,6 +6,7 @@ import { literalFindings } from "../src/literal-gate";
 import { DEFAULT_CONFIG } from "../src/types";
 import { tempRepo } from "./support";
 
+const GateRule = { Literals: "literals" } as const;
 const NEW = { kind: "new-file" } as const;
 const onLines = (...lines: number[]) => ({ kind: "diff" as const, added: new Set(lines), removedAfter: new Map<number, number>() });
 
@@ -56,6 +57,21 @@ describe("literalFindings: SQL discriminants", () => {
 
   test("a single-quoted JS argument or assignment is not SQL", () => {
     expect(literalFindings("src/a.ts", "const mode = 'combo';\ncall(a, 'combo');\n", NEW)).toEqual([]);
+  });
+
+  test.each([
+    { query: "SELECT * FROM items WHERE status = 'a'", values: ["a"] },
+    { query: "SELECT * FROM items WHERE status IN ('a', 'b')", values: ["a", "b"] },
+    { query: "INSERT INTO items (status) VALUES ('a')", values: ["a"] },
+    { query: "SELECT * FROM items WHERE status = ''", values: [] },
+  ])("checks single-character SQL values in $query", ({ query, values }) => {
+    for (const path of ["src/a.ts", "src/a.rs"]) {
+      const findings = literalFindings(path, JSON.stringify(query) + ";", NEW);
+      expect(findings).toHaveLength(values.length);
+      for (const value of values) {
+        expect(findings.some(finding => finding.includes('SQL discriminant "' + value + '"'))).toBe(true);
+      }
+    }
   });
 
   test("bound parameters pass", () => {
@@ -118,9 +134,9 @@ describe("entropy check: literals", () => {
 
     const on = run(true);
     expect(on.verdict).toBe("fail");
-    const messages = on.files[0].findings.filter((f) => f.rule === "literals").map((f) => f.message);
+    const messages = on.files[0].findings.filter((f) => f.rule === GateRule.Literals).map((f) => f.message);
     expect(messages).toEqual([expect.stringContaining('line 2: string comparison with "new"')]);
-    expect(run(false).files[0].findings.filter((f) => f.rule === "literals")).toEqual([]);
+    expect(run(false).files[0].findings.filter((f) => f.rule === GateRule.Literals)).toEqual([]);
   });
 
   test("the literals gate is on by default", () => {
@@ -182,7 +198,7 @@ describe("literal context through the CLI", () => {
       const rejected = run();
       expect(rejected.status).toBe(1);
       const literals = rejected.report.files.flatMap((file: { findings: { rule: string; message: string }[] }) =>
-        file.findings.filter(finding => finding.rule === "literals").map(finding => finding.message));
+        file.findings.filter(finding => finding.rule === GateRule.Literals).map(finding => finding.message));
       expect(literals).toHaveLength(2);
       expect(literals).toEqual(expect.arrayContaining([
         expect.stringContaining('line 2: SQL discriminant "combo"'),
