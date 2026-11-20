@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { afterAll, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { checkRepo } from "../src/check";
@@ -124,5 +125,76 @@ describe("entropy check: literals", () => {
 
   test("the literals gate is on by default", () => {
     expect(DEFAULT_CONFIG.gate.literals).toBe(true);
+  });
+});
+
+describe("literalFindings: lexical context regressions", () => {
+  test.each([
+    ['if (typeof value === "string" && value === "combo") go();', ["combo"]],
+    ['if ("string" === typeof value && "combo" === value) go();', ["combo"]],
+    ['const example = "if (key === \'combo\') go();";', []],
+    ['if (typeof value === "combo") go();', ["combo"]],
+  ])("scopes comparisons to their operands: %s", (source, expected) => {
+    const findings = literalFindings("a.ts", source, NEW);
+    expect(findings).toHaveLength(expected.length);
+    expected.forEach(value => expect(findings.join("\n")).toContain('"' + value + '"'));
+  });
+
+  test.each([
+    'pub(crate) const CODE: &str = "CATEGORY_NOT_FOUND";',
+    'pub const CODE: &str =\n "CATEGORY_NOT_FOUND";',
+    'pub(in crate::errors) const CODE: &str =\n "CATEGORY_NOT_FOUND";',
+  ])("allows the constant home across visibility and lines: %s", source => {
+    expect(literalFindings("a.rs", source, NEW)).toEqual([]);
+  });
+
+  test("an allowed home does not exempt another use on its line", () => {
+    const source = 'const CODE: &str = "CATEGORY_NOT_FOUND"; fail("OTHER_ERROR");';
+    expect(literalFindings("a.rs", source, NEW)).toEqual([expect.stringContaining('"OTHER_ERROR"')]);
+  });
+
+  test.each([
+    ["a.rs", 'let q = r#"SELECT * FROM products WHERE product_type = \'combo\'"#;', 1],
+    ["a.ts", "const q = `SELECT * FROM products WHERE\n product_type = 'combo'`;", 2],
+    ["a.rs", 'let q = r##"SELECT * FROM products WHERE\n product_type = \'combo\'"##;', 2],
+    ["a.ts", "const q = `SELECT * FROM products WHERE status IN (\n 'completed',\n 'void')`;", 2],
+  ])("retains query context and literal lines: %s %s", (path, source, firstLine) => {
+    const findings = literalFindings(path, source, NEW);
+    expect(findings[0]).toContain("line " + firstLine + ": SQL discriminant");
+    expect(literalFindings(path, source, onLines(firstLine - 1))).toEqual([]);
+    expect(literalFindings(path, source, onLines(firstLine))).toHaveLength(1);
+  });
+});
+
+describe("literal context through the CLI", () => {
+  test("rejects raw SQL and domain comparisons, then accepts named values and documentation", () => {
+    const repo = tempRepo("entropy-literal-cli-");
+    const run = () => {
+      const result = spawnSync(process.execPath, [new URL("../src/cli.ts", import.meta.url).pathname,
+        "check", "--repo", repo.path, "--base", "HEAD", "--format", "json"], { encoding: "utf8" });
+      return { status: result.status, report: JSON.parse(result.stdout) };
+    };
+    try {
+      repo.write("src/a.ts", 'export const old = value === "old";\n');
+      repo.commit("base");
+      repo.write("src/a.ts", 'export const old = value === "old";\nif (typeof value === "string" && value === "combo") go();\n');
+      repo.write("src/a.rs", 'let q = r#"SELECT * FROM products WHERE\n product_type = \'combo\'"#;\npub(crate) const CODE: &str =\n "CATEGORY_NOT_FOUND";\n');
+      const rejected = run();
+      expect(rejected.status).toBe(1);
+      const literals = rejected.report.files.flatMap((file: { findings: { rule: string; message: string }[] }) =>
+        file.findings.filter(finding => finding.rule === "literals").map(finding => finding.message));
+      expect(literals).toHaveLength(2);
+      expect(literals).toEqual(expect.arrayContaining([
+        expect.stringContaining('line 2: SQL discriminant "combo"'),
+        expect.stringContaining('line 2: string comparison with "combo"'),
+      ]));
+      repo.write("src/a.ts", 'export const old = value === "old";\nconst example = "if (key === \'combo\') go();";\nif (typeof value === "string" && value === ProductKind.Combo) go();\n');
+      repo.write("src/a.rs", 'let q = r#"SELECT * FROM products WHERE\n product_type = $1"#;\npub(crate) const CODE: &str =\n "CATEGORY_NOT_FOUND";\n');
+      const accepted = run();
+      expect(accepted.status).toBe(0);
+      expect(accepted.report.verdict).toBe("pass");
+    } finally {
+      rmSync(repo.path, { recursive: true, force: true });
+    }
   });
 });
